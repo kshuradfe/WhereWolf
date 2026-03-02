@@ -54,6 +54,8 @@ export default function GamePage() {
   const allCharactersRef = useRef<CharacterType[]>([]);
 
   const advancePhaseRef = useRef<() => Promise<void>>(async () => {});
+  // Mutex: prevents runBotNightActions / runBotVotes from running concurrently
+  const botActingRef = useRef(false);
 
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { roomRef.current = room; }, [room]);
@@ -114,6 +116,22 @@ export default function GamePage() {
     if (phase === GamePhaseEnum.VOTING) return "Voting Phase";
     return "Game";
   }, [phase, winner]);
+
+  // Extract the wolf kill target from nightActions (needed for Witch's heal decision)
+  const wolfTargetId = useMemo(() => {
+    if (!session?.nightActions) return null;
+    try {
+      const actionsObj =
+        typeof session.nightActions === "string"
+          ? JSON.parse(session.nightActions)
+          : session.nightActions;
+      const actions = Object.values(actionsObj) as { action: string; target: number | null }[];
+      const wolfKill = actions.find((a) => a.action === "wolf_kill");
+      return wolfKill ? wolfKill.target : null;
+    } catch {
+      return null;
+    }
+  }, [session]);
 
   const addLog = useCallback((msg: string) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -236,23 +254,29 @@ export default function GamePage() {
     }
   }, [target, isWerewolf, room, me, phase]);
 
-  const submitNightAction = async () => {
-    if (!session || !room || target === null) {
+  const submitNightAction = async (actionType = "target") => {
+    const isSkipLike = ["skip", "heal"].includes(actionType);
+    if (!session || !room || (target === null && !isSkipLike)) {
       toast.warning("Select a target first");
       return;
     }
     // Wolves must have consensus
-    if (isWerewolf && !wolfConsensus) {
+    if (isWerewolf && !wolfConsensus && actionType !== "skip") {
       toast.warning("All werewolves must select the same target");
       return;
     }
     try {
       const api = getApiService();
+      // Wolves tag their kill so the backend can distinguish it from other "target" actions
+      const finalAction = isWerewolf ? "wolf_kill" : actionType;
+      // Heal always targets the wolf's victim; poison uses the selected target
+      const finalTargetId = actionType === "heal" ? wolfTargetId : (actionType === "skip" ? null : target);
+
       const res: ApiResponse<{ allActionsComplete?: boolean }> = await api.post("/api/game/action", {
         sessionId: session.id,
         playerId: me,
-        action: "target",
-        targetId: target,
+        action: finalAction,
+        targetId: finalTargetId,
       });
       if (!res.success) throw new Error(res.message || "Failed");
       setSubmitted(true);
@@ -367,13 +391,20 @@ export default function GamePage() {
 
   const runBotNightActions = useCallback(async () => {
     if (!isTestMode) return;
+    // Mutex: prevent concurrent executions (e.g. React StrictMode double-invoke)
+    if (botActingRef.current) return;
+    botActingRef.current = true;
+
     // Read latest state via refs to avoid stale closure
     const currentSession = sessionRef.current;
     const currentRoom = roomRef.current;
     const currentPlayers = playersRef.current;
     const currentCharacters = allCharactersRef.current;
 
-    if (!currentSession || !currentRoom) return;
+    if (!currentSession || !currentRoom) {
+      botActingRef.current = false;
+      return;
+    }
 
     setBotsActing(true);
     addLog("[Test Mode] Bots are acting at night...");
@@ -381,12 +412,22 @@ export default function GamePage() {
 
     const botIndices = currentSession.alivePlayers.filter((i) => isBotPlayer(currentPlayers[i]?.name ?? null));
 
-    for (const botIdx of botIndices) {
+    // Witch acts last — needs to know who the wolf killed first
+    const witchBotIndices = botIndices.filter((i) => {
+      const r = currentCharacters.find((c) => c.id === currentPlayers[i]?.role);
+      return r?.name.toLowerCase() === "witch" || r?.name === "女巫";
+    });
+    const nonWitchBotIndices = botIndices.filter((i) => !witchBotIndices.includes(i));
+
+    let wolfVictimId: number | null = null;
+
+    for (const botIdx of nonWitchBotIndices) {
       const botRoleId = currentPlayers[botIdx]?.role;
       const botRole = currentCharacters.find((c) => c.id === botRoleId);
       if (!botRole) continue;
 
       const { action, targetId } = getBotNightAction(botIdx, botRole, currentSession.alivePlayers, currentPlayers, currentCharacters);
+      if (action === "wolf_kill" && targetId !== null) wolfVictimId = targetId;
       await randomDelay();
       try {
         await api.post("/api/game/action", {
@@ -402,18 +443,62 @@ export default function GamePage() {
       }
     }
 
+    for (const botIdx of witchBotIndices) {
+      const botRoleId = currentPlayers[botIdx]?.role;
+      const botRole = currentCharacters.find((c) => c.id === botRoleId);
+      if (!botRole) continue;
+
+      const { action, targetId } = getBotNightAction(botIdx, botRole, currentSession.alivePlayers, currentPlayers, currentCharacters, wolfVictimId);
+      await randomDelay();
+      try {
+        await api.post("/api/game/action", {
+          sessionId: currentSession.id,
+          playerId: botIdx,
+          action,
+          targetId,
+        });
+        socketService.emitActionSubmitted(currentRoom.roomCode, botIdx);
+        setNightActionsSubmitted((prev) => new Set(prev).add(botIdx));
+      } catch (e) {
+        console.error(`Bot ${botIdx} (witch) night action failed`, e);
+      }
+    }
+
     setBotsActing(false);
     addLog("[Test Mode] Bots finished night actions. Advancing phase...");
-    setTimeout(() => advancePhaseRef.current(), 800);
+
+    // Call the phase API directly — avoids isAdmin check in advancePhase which can fail
+    await new Promise((r) => setTimeout(r, 800));
+    try {
+      const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+        await api.post("/api/game/phase", { sessionId: currentSession.id });
+      if (res.success && res.data) {
+        socketService.emitPhaseChanged(currentRoom.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
+        if (res.data.winner) {
+          setWinner(res.data.winner);
+          socketService.emitGameEnded(currentRoom.roomCode, res.data.winner);
+        }
+      }
+    } catch (e) {
+      console.error("Bot advance phase (night→day) failed", e);
+    }
+
+    botActingRef.current = false;
   }, [isTestMode, addLog]);
 
   const runBotVotes = useCallback(async () => {
     if (!isTestMode) return;
+    if (botActingRef.current) return;
+    botActingRef.current = true;
+
     const currentSession = sessionRef.current;
     const currentRoom = roomRef.current;
     const currentPlayers = playersRef.current;
 
-    if (!currentSession || !currentRoom) return;
+    if (!currentSession || !currentRoom) {
+      botActingRef.current = false;
+      return;
+    }
 
     setBotsActing(true);
     addLog("[Test Mode] Bots are voting...");
@@ -439,6 +524,7 @@ export default function GamePage() {
 
     setBotsActing(false);
     addLog("[Test Mode] Bots finished voting.");
+    botActingRef.current = false;
   }, [isTestMode, addLog]);
 
   const leaveGame = () => {
@@ -583,6 +669,11 @@ export default function GamePage() {
                           ? "✓ All werewolves agree on the target"
                           : undefined;
 
+                    const wolfTargetName =
+                      wolfTargetId !== null
+                        ? players[wolfTargetId]?.name || `Player ${wolfTargetId + 1}`
+                        : null;
+
                     return (
                       <NightPhaseActions
                         canAct={canAct}
@@ -592,6 +683,8 @@ export default function GamePage() {
                         onSkipAction={skipNightAction}
                         submitDisabled={isWerewolf && !wolfConsensus}
                         hint={wolfHint}
+                        roleName={role?.name}
+                        wolfTargetName={wolfTargetName}
                       />
                     );
                   }

@@ -22,38 +22,48 @@ export interface BotAction {
 
 /**
  * Decide what night action a bot should take.
- * Werewolves target a random non-werewolf alive player.
- * Roles with priority > 0 (Seer, Guard, Witch, Fox…) target a random alive non-self player.
- * Roles with priority === 0 (Villager, Idiot, etc.) skip.
+ *
+ * Wolves: action = "wolf_kill", target = random non-wolf alive player
+ * Witch:  50% chance to heal the wolf victim (action = "heal"), otherwise skip
+ * Others with priority > 0: action = "target", random alive non-self player
+ * Priority === 0 (Villager, Hunter, etc.): skip
  */
 export function getBotNightAction(
   botIndex: number,
   role: CharacterType,
   alivePlayers: number[],
   allPlayers: PlayerType[],
-  allCharacters: CharacterType[]
+  allCharacters: CharacterType[],
+  wolfVictimId: number | null = null
 ): BotAction {
   const otherAlive = alivePlayers.filter((i) => i !== botIndex);
 
   if (role.team === "werewolf") {
-    // Pick a random non-werewolf alive player
     const nonWolfAlive = otherAlive.filter((i) => {
       const r = allCharacters.find((c) => c.id === allPlayers[i]?.role);
       return r?.team !== "werewolf";
     });
     const targets = nonWolfAlive.length > 0 ? nonWolfAlive : otherAlive;
-    return { action: "target", targetId: targets.length > 0 ? randomFrom(targets) : null };
+    return { action: "wolf_kill", targetId: targets.length > 0 ? randomFrom(targets) : null };
+  }
+
+  const isWitch = role.name.toLowerCase() === "witch" || role.name === "女巫";
+  if (isWitch) {
+    // Bot witch: 50 % chance to save the wolf's victim if there is one
+    if (wolfVictimId !== null && Math.random() < 0.5) {
+      return { action: "heal", targetId: wolfVictimId };
+    }
+    return { action: "skip", targetId: null };
   }
 
   if (role.priority > 0) {
-    // Has a night action — pick random alive non-self player
     return {
       action: "target",
       targetId: otherAlive.length > 0 ? randomFrom(otherAlive) : null,
     };
   }
 
-  // No night action
+  // No night action (Villager, Hunter after priority=0 fix, etc.)
   return { action: "skip", targetId: null };
 }
 
