@@ -19,6 +19,7 @@ export enum GamePhaseEnum {
   NIGHT = "night",
   DAY = "day",
   VOTING = "voting",
+  HUNTER_SHOOT = "hunter_shoot",
   ENDED = "ended",
 }
 

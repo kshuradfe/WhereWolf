@@ -19,6 +19,7 @@ enum GamePhase {
   night
   day
   voting
+  hunter_shoot
   ended
 }
 
@@ -57,6 +58,9 @@ model GameSession {
   deadPlayers         String    @default("[]") // JSON array of player indices
   votes               String    @default("{}") // JSON object {voterId: targetId}
   nightActions        String    @default("{}") // JSON object {playerId: {action, target}}
+  witchHealUsed       Boolean   @default(false)
+  witchPoisonUsed     Boolean   @default(false)
+  guardLastTarget     Int?
   gameLog             GameLog[]
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt

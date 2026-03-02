@@ -16,7 +16,7 @@ import { getApiService } from "@/services/apiService";
 import { socketService } from "@/services/socketService";
 import { GamePhaseEnum, LocalStorageKeyEnum, RouteEnum } from "@/lib/enums";
 import type { ApiResponse, CharacterType, GameSessionType, PlayerType, RoomType } from "@/lib/types";
-import { getBotNightAction, getBotVoteTarget, isBotPlayer, randomDelay } from "@/lib/botLogic";
+import { getBotNightAction, getBotVoteTarget, getBotGuardTarget, getBotHunterShootTarget, isBotPlayer, randomDelay } from "@/lib/botLogic";
 
 export default function GamePage() {
   const router = useRouter();
@@ -42,19 +42,15 @@ export default function GamePage() {
   >([]);
   const [chatInput, setChatInput] = useState<string>("");
   const [wolfSelections, setWolfSelections] = useState<Record<number, number | null>>({});
-  const [nightActionsSubmitted, setNightActionsSubmitted] = useState<Set<number>>(new Set());
-  const [revealedTarget, setRevealedTarget] = useState<{ playerId: number; role: CharacterType } | null>(null);
+  const [revealedTarget, setRevealedTarget] = useState<{ playerId: number; isWolf: boolean } | null>(null);
   const [botsActing, setBotsActing] = useState(false);
   const isTestMode = typeof window !== "undefined" && localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true";
 
-  // Refs to always access the latest state inside callbacks/timeouts (avoids stale closures)
+  // Refs for latest state inside callbacks/timeouts
   const sessionRef = useRef<GameSessionType | null>(null);
   const roomRef = useRef<RoomType | null>(null);
   const playersRef = useRef<PlayerType[]>([]);
   const allCharactersRef = useRef<CharacterType[]>([]);
-
-  const advancePhaseRef = useRef<() => Promise<void>>(async () => {});
-  // Mutex: prevents runBotNightActions / runBotVotes from running concurrently
   const botActingRef = useRef(false);
 
   useEffect(() => { sessionRef.current = session; }, [session]);
@@ -65,31 +61,17 @@ export default function GamePage() {
   // Derived
   const isAlive = useMemo(() => (session ? session.alivePlayers.includes(me) : true), [session, me]);
   const isWerewolf = role?.team === "werewolf";
+  const isSeer = role ? (role.name.toLowerCase() === "seer" || role.name === "预言家") : false;
+  const isWitch = role ? (role.name.toLowerCase() === "witch" || role.name === "女巫") : false;
+  const isGuard = role ? (role.name.toLowerCase() === "guard" || role.name === "守卫") : false;
+  const isHunter = role ? (role.name.toLowerCase() === "hunter" || role.name === "猎人") : false;
 
-  // Check if higher priority roles have acted (priority system: higher number = acts first)
-  const canActBasedOnPriority = useMemo(() => {
-    if (!role || !session || !players.length || !allCharacters.length) return false;
-    const myPriority = role.priority;
-    if (myPriority === 0) return false; // No night action
-
-    // Get all alive players with higher priority than me
-    const higherPriorityPlayers = session.alivePlayers
-      .filter((pIdx) => pIdx !== me)
-      .map((pIdx) => {
-        const playerRole = allCharacters.find((c) => c.id === players[pIdx]?.role);
-        return { idx: pIdx, priority: playerRole?.priority || 0 };
-      })
-      .filter((p) => p.priority > myPriority);
-
-    // All higher priority players must have acted
-    return higherPriorityPlayers.every((p) => nightActionsSubmitted.has(p.idx));
-  }, [role, session, players, allCharacters, me, nightActionsSubmitted]);
-
-  const canAct =
-    phase === GamePhaseEnum.NIGHT && isAlive && !submitted && (role?.priority ?? 0) > 0 && canActBasedOnPriority;
+  // Simultaneous night actions: any role with a night ability can act immediately
+  const hasNightAction = isWerewolf || isSeer || isWitch || isGuard;
+  const canAct = phase === GamePhaseEnum.NIGHT && isAlive && !submitted && hasNightAction;
   const canVote = phase === GamePhaseEnum.VOTING && isAlive && !submitted;
 
-  // Get all werewolf player indices
+  // Werewolf player indices
   const werewolves = useMemo(() => {
     if (!isWerewolf || !players.length || !allCharacters.length) return [];
     return players
@@ -98,7 +80,6 @@ export default function GamePage() {
       .map((p) => p.idx);
   }, [isWerewolf, players, allCharacters]);
 
-  // Check if all wolves have selected the same target
   const wolfConsensus = useMemo(() => {
     if (!isWerewolf || werewolves.length === 0) return true;
     const selections = Object.entries(wolfSelections)
@@ -114,12 +95,13 @@ export default function GamePage() {
     if (phase === GamePhaseEnum.NIGHT) return "Night Phase";
     if (phase === GamePhaseEnum.DAY) return "Day Phase";
     if (phase === GamePhaseEnum.VOTING) return "Voting Phase";
+    if (phase === GamePhaseEnum.HUNTER_SHOOT) return "Hunter Shoot";
     return "Game";
   }, [phase, winner]);
 
-  // Extract the wolf kill target from nightActions (needed for Witch's heal decision)
+  // Wolf kill target from nightActions (for Witch heal — only visible if heal not yet used)
   const wolfTargetId = useMemo(() => {
-    if (!session?.nightActions) return null;
+    if (!session?.nightActions || session.witchHealUsed) return null;
     try {
       const actionsObj =
         typeof session.nightActions === "string"
@@ -151,7 +133,6 @@ export default function GamePage() {
       setDay(data.session.dayNumber);
       const storedId = parseInt(localStorage.getItem(LocalStorageKeyEnum.PLAYER_ID) || "-1", 10);
       setMe(storedId);
-      // Fetch all characters for role reveal
       const rolesRes: ApiResponse<CharacterType[]> = await api.get("/api/roles");
       if (rolesRes.success && rolesRes.data) {
         setAllCharacters(rolesRes.data);
@@ -166,12 +147,12 @@ export default function GamePage() {
     }
   }, []);
 
+  // Initial load
   useEffect(() => {
     const code = localStorage.getItem(LocalStorageKeyEnum.ROOM_CODE);
     if (code) {
       fetchState(code).then(() => {
         if (localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true") {
-          // First night: give state time to settle then run bot actions
           setTimeout(() => runBotNightActions(), 2000);
         }
       });
@@ -179,6 +160,7 @@ export default function GamePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Socket events
   useEffect(() => {
     const roomCode = localStorage.getItem(LocalStorageKeyEnum.ROOM_CODE);
 
@@ -190,7 +172,6 @@ export default function GamePage() {
       setTarget(null);
       setChatMessages([]);
       setWolfSelections({});
-      setNightActionsSubmitted(new Set());
       setRevealedTarget(null);
       addLog(`Phase → ${data.phase} (Day ${data.dayNumber})`);
       if (roomCode) {
@@ -200,6 +181,8 @@ export default function GamePage() {
               setTimeout(() => runBotNightActions(), 1200);
             } else if (data.phase === GamePhaseEnum.VOTING) {
               setTimeout(() => runBotVotes(), 1200);
+            } else if (data.phase === GamePhaseEnum.HUNTER_SHOOT) {
+              setTimeout(() => runBotHunterShoot(), 1200);
             }
           }
         });
@@ -215,11 +198,7 @@ export default function GamePage() {
       setWinner(data.winner);
       addLog(`Game Over: ${data.winner === "villager" ? "Villagers" : "Werewolves"} win`);
     });
-    socketService.onActionSubmitted((...args) => {
-      const data = args[0] as { playerId: number };
-      // Track that this player has acted (for priority system)
-      setNightActionsSubmitted((prev) => new Set(prev).add(data.playerId));
-      // Don't reveal player identity in logs
+    socketService.onActionSubmitted(() => {
       addLog(`A player submitted their night action`);
     });
     socketService.onVoteSubmitted(() => {
@@ -232,21 +211,13 @@ export default function GamePage() {
     socketService.onChatMessage((...args) => {
       const data = args[0] as { playerId: number; playerName: string; message: string };
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id,
-          playerId: data.playerId,
-          playerName: data.playerName,
-          message: data.message,
-        },
-      ]);
+      setChatMessages((prev) => [...prev, { id, playerId: data.playerId, playerName: data.playerName, message: data.message }]);
     });
     return () => socketService.removeAllListeners();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Notify other wolves when this wolf selects a target
+  // Notify other wolves when selecting a target
   useEffect(() => {
     if (isWerewolf && room && phase === GamePhaseEnum.NIGHT) {
       socketService.emitWolfSelect(room.roomCode, me, target);
@@ -254,22 +225,20 @@ export default function GamePage() {
     }
   }, [target, isWerewolf, room, me, phase]);
 
+  // ── Night Action Submit ──────────────────────────────────────
   const submitNightAction = async (actionType = "target") => {
     const isSkipLike = ["skip", "heal"].includes(actionType);
     if (!session || !room || (target === null && !isSkipLike)) {
       toast.warning("Select a target first");
       return;
     }
-    // Wolves must have consensus
     if (isWerewolf && !wolfConsensus && actionType !== "skip") {
       toast.warning("All werewolves must select the same target");
       return;
     }
     try {
       const api = getApiService();
-      // Wolves tag their kill so the backend can distinguish it from other "target" actions
       const finalAction = isWerewolf ? "wolf_kill" : actionType;
-      // Heal always targets the wolf's victim; poison uses the selected target
       const finalTargetId = actionType === "heal" ? wolfTargetId : (actionType === "skip" ? null : target);
 
       const res: ApiResponse<{ allActionsComplete?: boolean }> = await api.post("/api/game/action", {
@@ -280,32 +249,27 @@ export default function GamePage() {
       });
       if (!res.success) throw new Error(res.message || "Failed");
       setSubmitted(true);
-      
-      // If Seer, reveal the target's role
-      if (role?.name.toLowerCase().includes('seer') && target !== null) {
+
+      // Seer: reveal team only (好人 or 狼人)
+      if (isSeer && target !== null) {
         const targetRole = allCharacters.find((c) => c.id === players[target]?.role);
         if (targetRole) {
-          setRevealedTarget({ playerId: target, role: targetRole });
-          toast.success(`${players[target]?.name || `Player ${target + 1}`} is a ${targetRole.name}!`, {
-            autoClose: 5000,
-          });
+          const isWolfTarget = targetRole.team === "werewolf";
+          setRevealedTarget({ playerId: target, isWolf: isWolfTarget });
+          const name = players[target]?.name || `Player ${target + 1}`;
+          toast.success(isWolfTarget ? `${name} 是狼人 🐺` : `${name} 是好人 🧑‍🌾`, { autoClose: 5000 });
         }
       }
-      
+
       setTarget(null);
       socketService.emitActionSubmitted(room.roomCode, me);
       toast.success("Action submitted");
 
-      // Auto-transition to day if all night actions are complete
       if (res.data?.allActionsComplete) {
         const isAdmin = players[me]?.isAdmin;
         if (isAdmin) {
-          // Admin auto-advances the phase after a short delay
-          setTimeout(() => {
-            advancePhase();
-          }, 2000);
+          setTimeout(() => advancePhase(), 2000);
         } else {
-          // Non-admins will receive the phase change via socket event from admin
           addLog("All night actions complete. Waiting for phase transition...");
         }
       }
@@ -331,6 +295,28 @@ export default function GamePage() {
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : "Skip failed";
       toast.error(errorMessage);
+    }
+  };
+
+  // ── Hunter Shoot Submit ──────────────────────────────────────
+  const submitHunterShoot = async (shootTarget: number | null) => {
+    if (!session || !room) return;
+    try {
+      const api = getApiService();
+      const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+        await api.post("/api/game/phase", {
+          sessionId: session.id,
+          hunterTarget: shootTarget,
+        });
+      if (res.success && res.data) {
+        socketService.emitPhaseChanged(room.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
+        if (res.data.winner) {
+          setWinner(res.data.winner);
+          socketService.emitGameEnded(room.roomCode, res.data.winner);
+        }
+      }
+    } catch (e) {
+      console.error("Hunter shoot failed", e);
     }
   };
 
@@ -371,11 +357,9 @@ export default function GamePage() {
     try {
       const api = getApiService();
       const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null; session: GameSessionType }> =
-        await api.post("/api/game/phase", {
-          sessionId: session.id,
-        });
+        await api.post("/api/game/phase", { sessionId: session.id });
       if (res.success && res.data) {
-        socketService.emitPhaseChanged(room.roomCode, res.data.phase as GamePhaseEnum, day);
+        socketService.emitPhaseChanged(room.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
         if (res.data.winner) {
           setWinner(res.data.winner);
           socketService.emitGameEnded(room.roomCode, res.data.winner);
@@ -384,104 +368,88 @@ export default function GamePage() {
     } catch (e) {
       console.error("Phase transition failed", e);
     }
-  }, [session, room, players, me, day]);
+  }, [session, room, players, me]);
 
-  // Keep advancePhaseRef in sync so bot callbacks always call the latest version
-  useEffect(() => { advancePhaseRef.current = advancePhase; }, [advancePhase]);
-
+  // ── Bot Logic (Test Mode) ──────────────────────────────────
   const runBotNightActions = useCallback(async () => {
     if (!isTestMode) return;
-    // Mutex: prevent concurrent executions (e.g. React StrictMode double-invoke)
     if (botActingRef.current) return;
     botActingRef.current = true;
 
-    // Read latest state via refs to avoid stale closure
-    const currentSession = sessionRef.current;
-    const currentRoom = roomRef.current;
-    const currentPlayers = playersRef.current;
-    const currentCharacters = allCharactersRef.current;
+    const s = sessionRef.current;
+    const r = roomRef.current;
+    const p = playersRef.current;
+    const chars = allCharactersRef.current;
 
-    if (!currentSession || !currentRoom) {
-      botActingRef.current = false;
-      return;
-    }
+    if (!s || !r) { botActingRef.current = false; return; }
 
     setBotsActing(true);
     addLog("[Test Mode] Bots are acting at night...");
     const api = getApiService();
+    const botIndices = s.alivePlayers.filter((i) => isBotPlayer(p[i]?.name ?? null));
 
-    const botIndices = currentSession.alivePlayers.filter((i) => isBotPlayer(currentPlayers[i]?.name ?? null));
-
-    // Witch acts last — needs to know who the wolf killed first
-    const witchBotIndices = botIndices.filter((i) => {
-      const r = currentCharacters.find((c) => c.id === currentPlayers[i]?.role);
-      return r?.name.toLowerCase() === "witch" || r?.name === "女巫";
-    });
-    const nonWitchBotIndices = botIndices.filter((i) => !witchBotIndices.includes(i));
+    // Separate by role type for ordering: wolves first, then seer/guard, then witch last
+    const witchBots: number[] = [];
+    const otherBots: number[] = [];
+    for (const i of botIndices) {
+      const c = chars.find((ch) => ch.id === p[i]?.role);
+      if (c?.name.toLowerCase() === "witch" || c?.name === "女巫") witchBots.push(i);
+      else otherBots.push(i);
+    }
 
     let wolfVictimId: number | null = null;
 
-    for (const botIdx of nonWitchBotIndices) {
-      const botRoleId = currentPlayers[botIdx]?.role;
-      const botRole = currentCharacters.find((c) => c.id === botRoleId);
+    for (const botIdx of otherBots) {
+      const botRole = chars.find((c) => c.id === p[botIdx]?.role);
       if (!botRole) continue;
 
-      const { action, targetId } = getBotNightAction(botIdx, botRole, currentSession.alivePlayers, currentPlayers, currentCharacters);
+      // Guard bot
+      if (botRole.name.toLowerCase() === "guard" || botRole.name === "守卫") {
+        const guardTarget = getBotGuardTarget(botIdx, s.alivePlayers, s.guardLastTarget);
+        await randomDelay();
+        try {
+          await api.post("/api/game/action", { sessionId: s.id, playerId: botIdx, action: "guard", targetId: guardTarget });
+          socketService.emitActionSubmitted(r.roomCode, botIdx);
+        } catch (e) { console.error(`Bot ${botIdx} guard failed`, e); }
+        continue;
+      }
+
+      const { action, targetId } = getBotNightAction(botIdx, botRole, s.alivePlayers, p, chars);
       if (action === "wolf_kill" && targetId !== null) wolfVictimId = targetId;
       await randomDelay();
       try {
-        await api.post("/api/game/action", {
-          sessionId: currentSession.id,
-          playerId: botIdx,
-          action,
-          targetId,
-        });
-        socketService.emitActionSubmitted(currentRoom.roomCode, botIdx);
-        setNightActionsSubmitted((prev) => new Set(prev).add(botIdx));
-      } catch (e) {
-        console.error(`Bot ${botIdx} night action failed`, e);
-      }
+        await api.post("/api/game/action", { sessionId: s.id, playerId: botIdx, action, targetId });
+        socketService.emitActionSubmitted(r.roomCode, botIdx);
+      } catch (e) { console.error(`Bot ${botIdx} night action failed`, e); }
     }
 
-    for (const botIdx of witchBotIndices) {
-      const botRoleId = currentPlayers[botIdx]?.role;
-      const botRole = currentCharacters.find((c) => c.id === botRoleId);
+    // Witch bots last — with potion awareness
+    for (const botIdx of witchBots) {
+      const botRole = chars.find((c) => c.id === p[botIdx]?.role);
       if (!botRole) continue;
-
-      const { action, targetId } = getBotNightAction(botIdx, botRole, currentSession.alivePlayers, currentPlayers, currentCharacters, wolfVictimId);
+      const { action, targetId } = getBotNightAction(botIdx, botRole, s.alivePlayers, p, chars, wolfVictimId, s.witchHealUsed, s.witchPoisonUsed);
       await randomDelay();
       try {
-        await api.post("/api/game/action", {
-          sessionId: currentSession.id,
-          playerId: botIdx,
-          action,
-          targetId,
-        });
-        socketService.emitActionSubmitted(currentRoom.roomCode, botIdx);
-        setNightActionsSubmitted((prev) => new Set(prev).add(botIdx));
-      } catch (e) {
-        console.error(`Bot ${botIdx} (witch) night action failed`, e);
-      }
+        await api.post("/api/game/action", { sessionId: s.id, playerId: botIdx, action, targetId });
+        socketService.emitActionSubmitted(r.roomCode, botIdx);
+      } catch (e) { console.error(`Bot ${botIdx} (witch) night action failed`, e); }
     }
 
     setBotsActing(false);
     addLog("[Test Mode] Bots finished night actions. Advancing phase...");
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
-    // Call the phase API directly — avoids isAdmin check in advancePhase which can fail
-    await new Promise((r) => setTimeout(r, 800));
     try {
       const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
-        await api.post("/api/game/phase", { sessionId: currentSession.id });
+        await api.post("/api/game/phase", { sessionId: s.id });
       if (res.success && res.data) {
-        socketService.emitPhaseChanged(currentRoom.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
+        socketService.emitPhaseChanged(r.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
         if (res.data.winner) {
           setWinner(res.data.winner);
-          socketService.emitGameEnded(currentRoom.roomCode, res.data.winner);
+          socketService.emitGameEnded(r.roomCode, res.data.winner);
         }
       }
-    } catch (e) {
-      console.error("Bot advance phase (night→day) failed", e);
-    }
+    } catch (e) { console.error("Bot advance phase failed", e); }
 
     botActingRef.current = false;
   }, [isTestMode, addLog]);
@@ -491,39 +459,74 @@ export default function GamePage() {
     if (botActingRef.current) return;
     botActingRef.current = true;
 
-    const currentSession = sessionRef.current;
-    const currentRoom = roomRef.current;
-    const currentPlayers = playersRef.current;
-
-    if (!currentSession || !currentRoom) {
-      botActingRef.current = false;
-      return;
-    }
+    const s = sessionRef.current;
+    const r = roomRef.current;
+    const p = playersRef.current;
+    if (!s || !r) { botActingRef.current = false; return; }
 
     setBotsActing(true);
     addLog("[Test Mode] Bots are voting...");
     const api = getApiService();
-
-    const botIndices = currentSession.alivePlayers.filter((i) => isBotPlayer(currentPlayers[i]?.name ?? null));
+    const botIndices = s.alivePlayers.filter((i) => isBotPlayer(p[i]?.name ?? null));
 
     for (const botIdx of botIndices) {
-      const targetId = getBotVoteTarget(botIdx, currentSession.alivePlayers);
+      const targetId = getBotVoteTarget(botIdx, s.alivePlayers);
       if (targetId === null) continue;
       await randomDelay();
       try {
-        await api.post("/api/game/vote", {
-          sessionId: currentSession.id,
-          playerId: botIdx,
-          targetId,
-        });
-        socketService.emitVoteSubmitted(currentRoom.roomCode, botIdx);
-      } catch (e) {
-        console.error(`Bot ${botIdx} vote failed`, e);
-      }
+        await api.post("/api/game/vote", { sessionId: s.id, playerId: botIdx, targetId });
+        socketService.emitVoteSubmitted(r.roomCode, botIdx);
+      } catch (e) { console.error(`Bot ${botIdx} vote failed`, e); }
     }
 
     setBotsActing(false);
     addLog("[Test Mode] Bots finished voting.");
+    botActingRef.current = false;
+  }, [isTestMode, addLog]);
+
+  const runBotHunterShoot = useCallback(async () => {
+    if (!isTestMode) return;
+    if (botActingRef.current) return;
+    botActingRef.current = true;
+
+    const s = sessionRef.current;
+    const r = roomRef.current;
+    const p = playersRef.current;
+    const chars = allCharactersRef.current;
+    if (!s || !r) { botActingRef.current = false; return; }
+
+    // Find the dead hunter bot
+    const deadPlayers = s.deadPlayers || [];
+    let hunterBotIdx: number | null = null;
+    for (const idx of deadPlayers) {
+      if (!isBotPlayer(p[idx]?.name ?? null)) continue;
+      const c = chars.find((ch) => ch.id === p[idx]?.role);
+      if (c && (c.name.toLowerCase() === "hunter" || c.name === "猎人")) {
+        hunterBotIdx = idx;
+        break;
+      }
+    }
+
+    if (hunterBotIdx !== null) {
+      setBotsActing(true);
+      addLog("[Test Mode] Bot hunter is shooting...");
+      await randomDelay(500, 1200);
+      const shootTarget = getBotHunterShootTarget(hunterBotIdx, s.alivePlayers);
+      const api = getApiService();
+      try {
+        const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+          await api.post("/api/game/phase", { sessionId: s.id, hunterTarget: shootTarget });
+        if (res.success && res.data) {
+          socketService.emitPhaseChanged(r.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
+          if (res.data.winner) {
+            setWinner(res.data.winner);
+            socketService.emitGameEnded(r.roomCode, res.data.winner);
+          }
+        }
+      } catch (e) { console.error("Bot hunter shoot failed", e); }
+      setBotsActing(false);
+    }
+
     botActingRef.current = false;
   }, [isTestMode, addLog]);
 
@@ -546,7 +549,8 @@ export default function GamePage() {
   }
 
   const alive = (idx: number) => session.alivePlayers.includes(idx);
-  const selectable = (idx: number) => (canAct || canVote) && alive(idx) && idx !== me && !submitted;
+  const canSelect = phase === GamePhaseEnum.HUNTER_SHOOT ? (isHunter && !isAlive) : (canAct || canVote);
+  const selectable = (idx: number) => canSelect && alive(idx) && idx !== me && !submitted;
 
   return (
     <AnimatedBackground phase={phase} className="">
@@ -577,8 +581,6 @@ export default function GamePage() {
                 const actualCharacter = allCharacters.find((c) => c.id === p.role);
                 const isWolf = werewolves.includes(idx);
                 const wolfSelectedThis = wolfSelections[idx];
-
-                // Wolves can see each other's roles during night phase
                 const shouldRevealWolf = isWerewolf && isWolf && phase === GamePhaseEnum.NIGHT;
 
                 const displayCharacter =
@@ -596,12 +598,13 @@ export default function GamePage() {
                         };
 
                 const playerKey = `${room.id}-player-${p.name || "empty"}-${p.role}-${idx}`;
-
-                // Show which target this wolf selected
                 const selectedTarget =
                   isWerewolf && isWolf && wolfSelectedThis !== undefined && wolfSelectedThis !== null
                     ? players[wolfSelectedThis]?.name || `Player ${wolfSelectedThis + 1}`
                     : null;
+
+                // Guard: visually mark the last guarded player as not selectable
+                const isGuardBlocked = isGuard && phase === GamePhaseEnum.NIGHT && session.guardLastTarget === idx;
 
                 return (
                   <div key={playerKey} className="relative">
@@ -610,16 +613,21 @@ export default function GamePage() {
                       index={idx}
                       currentPlayerId={me}
                       isAlive={alive(idx)}
-                      isSelectable={selectable(idx)}
+                      isSelectable={selectable(idx) && !isGuardBlocked}
                       isSelected={target === idx}
                       character={displayCharacter}
                       actualCharacter={actualCharacter}
                       showActualRole={showActualRole || shouldRevealWolf}
-                      onSelect={() => selectable(idx) && setTarget(idx)}
+                      onSelect={() => selectable(idx) && !isGuardBlocked && setTarget(idx)}
                     />
                     {selectedTarget && idx !== me && (
                       <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-red-600 text-white text-xs px-2 py-1 rounded-full whitespace-nowrap">
                         → {selectedTarget}
+                      </div>
+                    )}
+                    {isGuardBlocked && (
+                      <div className="absolute top-1 right-1 bg-yellow-600 text-white text-xs px-2 py-0.5 rounded font-bold">
+                        昨晚已守
                       </div>
                     )}
                   </div>
@@ -641,6 +649,43 @@ export default function GamePage() {
                   />
                 );
               }
+
+              // ── HUNTER SHOOT PHASE ──
+              if (phase === GamePhaseEnum.HUNTER_SHOOT) {
+                if (isHunter && !isAlive) {
+                  return (
+                    <div className="space-y-3">
+                      <div className="p-4 bg-orange-900/30 rounded-lg border border-orange-500/30">
+                        <h3 className="text-orange-200 font-semibold mb-2">🔫 猎人开枪</h3>
+                        <p className="text-orange-100/80 text-sm">
+                          你已死亡！选择一名玩家带走，或放弃开枪。
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          className="flex-1 px-4 py-3 text-sm rounded-lg bg-red-700 hover:bg-red-600 text-white font-semibold disabled:opacity-50"
+                          onClick={() => submitHunterShoot(target)}
+                          disabled={target === null}
+                        >
+                          开枪带走
+                        </button>
+                        <button
+                          className="flex-1 px-4 py-3 text-sm rounded-lg bg-gray-600 hover:bg-gray-500 text-white font-semibold"
+                          onClick={() => submitHunterShoot(null)}
+                        >
+                          放弃开枪
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="p-4 bg-orange-900/30 rounded-lg border border-orange-500/30">
+                    <p className="text-orange-200 text-sm">🔫 猎人正在选择开枪目标...</p>
+                  </div>
+                );
+              }
+
               if (!isAlive) {
                 return (
                   <div className="p-4 bg-red-900/30 rounded-lg border border-red-500/30">
@@ -648,66 +693,70 @@ export default function GamePage() {
                   </div>
                 );
               }
+
+              // ── NIGHT PHASE ──
               if (phase === GamePhaseEnum.NIGHT) {
-                if ((role?.priority ?? 0) > 0 && !submitted) {
-                  if (!canActBasedOnPriority) {
-                    return (
-                      <div className="p-4 bg-purple-900/30 rounded-lg border border-purple-500/30">
-                        <p className="text-purple-200 text-sm">⏳ Waiting for higher priority roles to act first...</p>
-                        <p className="text-purple-300 text-xs mt-2">
-                          Your role acts after other roles complete their actions.
-                        </p>
-                      </div>
-                    );
-                  }
+                if (canAct) {
+                  const wolfHint =
+                    isWerewolf && !wolfConsensus
+                      ? "⚠️ All werewolves must select the same target to proceed"
+                      : isWerewolf && wolfConsensus
+                        ? "✓ All werewolves agree on the target"
+                        : undefined;
 
-                  if (canAct) {
-                    const wolfHint =
-                      isWerewolf && !wolfConsensus
-                        ? "⚠️ All werewolves must select the same target to proceed"
-                        : isWerewolf && wolfConsensus
-                          ? "✓ All werewolves agree on the target"
-                          : undefined;
+                  const wolfTargetName =
+                    wolfTargetId !== null
+                      ? players[wolfTargetId]?.name || `Player ${wolfTargetId + 1}`
+                      : null;
 
-                    const wolfTargetName =
-                      wolfTargetId !== null
-                        ? players[wolfTargetId]?.name || `Player ${wolfTargetId + 1}`
-                        : null;
-
-                    return (
-                      <NightPhaseActions
-                        canAct={canAct}
-                        submitted={submitted}
-                        target={target}
-                        onSubmitAction={submitNightAction}
-                        onSkipAction={skipNightAction}
-                        submitDisabled={isWerewolf && !wolfConsensus}
-                        hint={wolfHint}
-                        roleName={role?.name}
-                        wolfTargetName={wolfTargetName}
-                      />
-                    );
-                  }
+                  return (
+                    <NightPhaseActions
+                      canAct={canAct}
+                      submitted={submitted}
+                      target={target}
+                      onSubmitAction={submitNightAction}
+                      onSkipAction={skipNightAction}
+                      submitDisabled={isWerewolf && !wolfConsensus}
+                      hint={wolfHint}
+                      roleName={role?.name}
+                      wolfTargetName={wolfTargetName}
+                      witchHealUsed={session.witchHealUsed}
+                      witchPoisonUsed={session.witchPoisonUsed}
+                      guardLastTarget={session.guardLastTarget}
+                    />
+                  );
                 }
-                if (submitted && revealedTarget && role?.name.toLowerCase().includes('seer')) {
+                // Seer submitted: show vision result
+                if (submitted && revealedTarget && isSeer) {
+                  const targetName = players[revealedTarget.playerId]?.name || `Player ${revealedTarget.playerId + 1}`;
                   return (
                     <div className="space-y-3">
                       <div className="p-4 bg-green-900/30 rounded-lg border border-green-500/30">
                         <p className="text-green-200 text-sm">✓ Action submitted. Waiting for other players...</p>
                       </div>
                       <div className="p-4 bg-blue-900/30 rounded-lg border border-blue-500/30">
-                        <p className="text-blue-200 text-sm font-semibold mb-2">🔮 Vision Revealed:</p>
+                        <p className="text-blue-200 text-sm font-semibold mb-2">🔮 查验结果：</p>
                         <p className="text-blue-100 text-sm">
-                          {players[revealedTarget.playerId]?.name || `Player ${revealedTarget.playerId + 1}`} is a{' '}
-                          <span className="font-bold text-blue-300">{revealedTarget.role.name}</span>
+                          {targetName} 是{" "}
+                          <span className={`font-bold ${revealedTarget.isWolf ? "text-red-400" : "text-green-400"}`}>
+                            {revealedTarget.isWolf ? "狼人 🐺" : "好人 🧑‍🌾"}
+                          </span>
                         </p>
-                        <p className="text-blue-300 text-xs mt-2">Team: {revealedTarget.role.team}</p>
                       </div>
+                    </div>
+                  );
+                }
+                if (submitted) {
+                  return (
+                    <div className="p-4 bg-green-900/30 rounded-lg border border-green-500/30">
+                      <p className="text-green-200 text-sm">✓ Action submitted. Waiting for other players...</p>
                     </div>
                   );
                 }
                 return <p className="text-orange-100/80 text-sm">Waiting for night actions...</p>;
               }
+
+              // ── DAY PHASE ──
               if (phase === GamePhaseEnum.DAY) {
                 return (
                   <DayPhaseActions
@@ -719,6 +768,8 @@ export default function GamePage() {
                   />
                 );
               }
+
+              // ── VOTING PHASE ──
               if (phase === GamePhaseEnum.VOTING) {
                 return (
                   <VotingPhaseActions

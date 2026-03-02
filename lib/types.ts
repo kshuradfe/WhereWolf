@@ -43,6 +43,9 @@ export interface GameSessionType {
   deadPlayers: number[];
   votes: Record<number, number>;
   nightActions: Record<number, NightActionType>;
+  witchHealUsed: boolean;
+  witchPoisonUsed: boolean;
+  guardLastTarget: number | null;
   createdAt: Date;
   updatedAt: Date;
 }

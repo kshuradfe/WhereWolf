@@ -10,15 +10,27 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, message: "Missing required fields" }, { status: 400 });
     }
 
-    const session = await prisma.gameSession.findUnique({
-      where: { id: sessionId },
-    });
-
+    const session = await prisma.gameSession.findUnique({ where: { id: sessionId } });
     if (!session) {
       return NextResponse.json({ success: false, message: "Session not found" }, { status: 404 });
     }
 
-    // Persist night action in session.nightActions JSON { [playerId]: { action, target } }
+    // Validate witch potion usage
+    if (action === "heal" && session.witchHealUsed) {
+      return NextResponse.json({ success: false, message: "Heal potion already used" }, { status: 400 });
+    }
+    if (action === "poison" && session.witchPoisonUsed) {
+      return NextResponse.json({ success: false, message: "Poison potion already used" }, { status: 400 });
+    }
+
+    // Validate guard cannot protect same player two nights in a row
+    if (action === "guard" && targetId !== null && session.guardLastTarget === targetId) {
+      return NextResponse.json(
+        { success: false, message: "Cannot guard the same player two nights in a row" },
+        { status: 400 }
+      );
+    }
+
     const nightActions = (() => {
       try {
         return JSON.parse(session.nightActions as unknown as string);
@@ -34,14 +46,13 @@ export async function POST(request: NextRequest) {
       data: { nightActions: JSON.stringify(nightActions) },
     });
 
-    // Check if all players with night actions have acted
+    // Check if all night-role players have acted
     const room = await prisma.rooms.findFirst({
       where: { gameSessions: { some: { id: sessionId } } },
       include: { gameSessions: true },
     });
 
     if (room) {
-      // Get alive players and their roles
       const alivePlayers = JSON.parse(session.alivePlayers as unknown as string) as number[];
       let playersData: Array<{ role: number | null }> = [];
       try {
@@ -51,13 +62,16 @@ export async function POST(request: NextRequest) {
         playersData = [];
       }
 
-      // Get all roles from the database to check priorities
       const roles = await prisma.roles.findMany();
+      const roleMap = new Map(roles.map((r) => [r.id, r]));
+
+      // Players who need to act: wolves (team=werewolf) + any role with priority > 0
       const rolesWithActions = alivePlayers.filter((pIdx) => {
-        const playerRole = playersData[pIdx]?.role;
-        if (!playerRole) return false;
-        const role = roles.find((r) => r.id === playerRole);
-        return role && role.priority > 0;
+        const roleId = playersData[pIdx]?.role;
+        if (!roleId) return false;
+        const role = roleMap.get(roleId);
+        if (!role) return false;
+        return role.team === "werewolf" || role.priority > 0;
       });
 
       const actedPlayers = Object.keys(nightActions).map(Number);
@@ -78,10 +92,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({
-      success: true,
-      message: "Action recorded",
-    });
+    return NextResponse.json({ success: true, message: "Action recorded" });
   } catch (error) {
     console.error("Error recording action:", error);
     return NextResponse.json({ success: false, message: "Failed to record action" }, { status: 500 });

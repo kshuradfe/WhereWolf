@@ -23,10 +23,11 @@ export interface BotAction {
 /**
  * Decide what night action a bot should take.
  *
- * Wolves: action = "wolf_kill", target = random non-wolf alive player
- * Witch:  50% chance to heal the wolf victim (action = "heal"), otherwise skip
- * Others with priority > 0: action = "target", random alive non-self player
- * Priority === 0 (Villager, Hunter, etc.): skip
+ * Wolves: action = "wolf_kill"
+ * Witch:  respects witchHealUsed / witchPoisonUsed
+ * Guard:  handled separately via getBotGuardTarget
+ * Seer / others with priority > 0: action = "target"
+ * Priority 0: skip
  */
 export function getBotNightAction(
   botIndex: number,
@@ -34,10 +35,13 @@ export function getBotNightAction(
   alivePlayers: number[],
   allPlayers: PlayerType[],
   allCharacters: CharacterType[],
-  wolfVictimId: number | null = null
+  wolfVictimId: number | null = null,
+  witchHealUsed = false,
+  witchPoisonUsed = false
 ): BotAction {
   const otherAlive = alivePlayers.filter((i) => i !== botIndex);
 
+  // Wolves
   if (role.team === "werewolf") {
     const nonWolfAlive = otherAlive.filter((i) => {
       const r = allCharacters.find((c) => c.id === allPlayers[i]?.role);
@@ -47,15 +51,27 @@ export function getBotNightAction(
     return { action: "wolf_kill", targetId: targets.length > 0 ? randomFrom(targets) : null };
   }
 
+  // Witch
   const isWitch = role.name.toLowerCase() === "witch" || role.name === "女巫";
   if (isWitch) {
-    // Bot witch: 50 % chance to save the wolf's victim if there is one
-    if (wolfVictimId !== null && Math.random() < 0.5) {
+    // 50% chance to heal if wolf victim is known and heal not used
+    if (!witchHealUsed && wolfVictimId !== null && Math.random() < 0.5) {
       return { action: "heal", targetId: wolfVictimId };
+    }
+    // 20% chance to poison a random player if poison not used
+    if (!witchPoisonUsed && otherAlive.length > 0 && Math.random() < 0.2) {
+      return { action: "poison", targetId: randomFrom(otherAlive) };
     }
     return { action: "skip", targetId: null };
   }
 
+  // Guard is handled via getBotGuardTarget, but if called here anyway, skip
+  const isGuard = role.name.toLowerCase() === "guard" || role.name === "守卫";
+  if (isGuard) {
+    return { action: "skip", targetId: null };
+  }
+
+  // Other roles with night action (Seer, etc.)
   if (role.priority > 0) {
     return {
       action: "target",
@@ -63,16 +79,34 @@ export function getBotNightAction(
     };
   }
 
-  // No night action (Villager, Hunter after priority=0 fix, etc.)
   return { action: "skip", targetId: null };
 }
 
 /**
- * Decide who a bot votes for during the voting phase.
- * Simply picks a random alive player that is not itself.
+ * Guard bot: pick a random alive player (including self), excluding last night's target.
+ */
+export function getBotGuardTarget(
+  botIndex: number,
+  alivePlayers: number[],
+  lastGuardTarget: number | null
+): number | null {
+  const valid = alivePlayers.filter((i) => i !== lastGuardTarget);
+  return valid.length > 0 ? randomFrom(valid) : null;
+}
+
+/**
+ * Voting: pick a random alive player other than self.
  */
 export function getBotVoteTarget(botIndex: number, alivePlayers: number[]): number | null {
   const targets = alivePlayers.filter((i) => i !== botIndex);
+  return targets.length > 0 ? randomFrom(targets) : null;
+}
+
+/**
+ * Hunter shoot: pick a random alive player other than self.
+ */
+export function getBotHunterShootTarget(hunterIndex: number, alivePlayers: number[]): number | null {
+  const targets = alivePlayers.filter((i) => i !== hunterIndex);
   return targets.length > 0 ? randomFrom(targets) : null;
 }
 
