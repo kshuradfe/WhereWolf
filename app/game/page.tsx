@@ -281,11 +281,7 @@ export default function GamePage() {
               const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
                 await localApi.post("/api/game/phase", { sessionId: session.id });
               if (phaseRes.success && phaseRes.data && room) {
-                socketService.emitPhaseChanged(room.roomCode, phaseRes.data.phase as GamePhaseEnum, phaseRes.data.dayNumber);
-                if (phaseRes.data.winner) {
-                  setWinner(phaseRes.data.winner);
-                  socketService.emitGameEnded(room.roomCode, phaseRes.data.winner);
-                }
+                applyPhaseTransition(room.roomCode, phaseRes.data.phase, phaseRes.data.dayNumber, phaseRes.data.winner);
               }
             } catch (err) { console.error("Phase advance after action failed", err); }
           }, 2000);
@@ -323,11 +319,7 @@ export default function GamePage() {
               const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
                 await api.post("/api/game/phase", { sessionId: session.id });
               if (phaseRes.success && phaseRes.data) {
-                socketService.emitPhaseChanged(room.roomCode, phaseRes.data.phase as GamePhaseEnum, phaseRes.data.dayNumber);
-                if (phaseRes.data.winner) {
-                  setWinner(phaseRes.data.winner);
-                  socketService.emitGameEnded(room.roomCode, phaseRes.data.winner);
-                }
+                applyPhaseTransition(room.roomCode, phaseRes.data.phase, phaseRes.data.dayNumber, phaseRes.data.winner);
               }
             } catch (err) { console.error("Phase advance after skip failed", err); }
           }, 2000);
@@ -350,11 +342,7 @@ export default function GamePage() {
           hunterTarget: shootTarget,
         });
       if (res.success && res.data) {
-        socketService.emitPhaseChanged(room.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
-        if (res.data.winner) {
-          setWinner(res.data.winner);
-          socketService.emitGameEnded(room.roomCode, res.data.winner);
-        }
+        applyPhaseTransition(room.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
       }
     } catch (e) {
       console.error("Hunter shoot failed", e);
@@ -391,6 +379,31 @@ export default function GamePage() {
     setChatInput("");
   }, [room, chatInput, players, me]);
 
+  // Shared helper: apply a phase transition result to local state AND broadcast to others.
+  // Needed because Socket.IO broadcast does NOT echo back to the sender, so the sender
+  // must update its own UI manually after calling the phase API.
+  const applyPhaseTransition = useCallback((
+    roomCode: string,
+    newPhase: string,
+    newDay: number,
+    newWinner: string | null
+  ) => {
+    socketService.emitPhaseChanged(roomCode, newPhase as GamePhaseEnum, newDay);
+    setPhase(newPhase as GamePhaseEnum);
+    setDay(newDay);
+    setSubmitted(false);
+    setTarget(null);
+    setChatMessages([]);
+    setWolfSelections({});
+    setRevealedTarget(null);
+    addLog(`Phase → ${newPhase} (Day ${newDay})`);
+    fetchState(roomCode);
+    if (newWinner) {
+      setWinner(newWinner);
+      socketService.emitGameEnded(roomCode, newWinner);
+    }
+  }, [fetchState, addLog]);
+
   const advancePhase = useCallback(async () => {
     if (!session || !room) return;
     const isAdmin = players[me]?.isAdmin;
@@ -400,16 +413,12 @@ export default function GamePage() {
       const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null; session: GameSessionType }> =
         await api.post("/api/game/phase", { sessionId: session.id });
       if (res.success && res.data) {
-        socketService.emitPhaseChanged(room.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
-        if (res.data.winner) {
-          setWinner(res.data.winner);
-          socketService.emitGameEnded(room.roomCode, res.data.winner);
-        }
+        applyPhaseTransition(room.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
       }
     } catch (e) {
       console.error("Phase transition failed", e);
     }
-  }, [session, room, players, me]);
+  }, [session, room, players, me, applyPhaseTransition]);
 
   // ── Bot Logic (Test Mode) ──────────────────────────────────
   const runBotNightActions = useCallback(async () => {
@@ -491,11 +500,7 @@ export default function GamePage() {
         const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
           await api.post("/api/game/phase", { sessionId: s.id });
         if (res.success && res.data) {
-          socketService.emitPhaseChanged(r.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
-          if (res.data.winner) {
-            setWinner(res.data.winner);
-            socketService.emitGameEnded(r.roomCode, res.data.winner);
-          }
+          applyPhaseTransition(r.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
         }
       } catch (e) { console.error("Bot advance phase failed", e); }
     } else {
@@ -503,7 +508,7 @@ export default function GamePage() {
     }
 
     botActingRef.current = false;
-  }, [isTestMode, addLog]);
+  }, [isTestMode, addLog, applyPhaseTransition]);
 
   const runBotVotes = useCallback(async () => {
     if (!isTestMode) return;
@@ -568,18 +573,14 @@ export default function GamePage() {
         const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
           await api.post("/api/game/phase", { sessionId: s.id, hunterTarget: shootTarget });
         if (res.success && res.data) {
-          socketService.emitPhaseChanged(r.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
-          if (res.data.winner) {
-            setWinner(res.data.winner);
-            socketService.emitGameEnded(r.roomCode, res.data.winner);
-          }
+          applyPhaseTransition(r.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
         }
       } catch (e) { console.error("Bot hunter shoot failed", e); }
       setBotsActing(false);
     }
 
     botActingRef.current = false;
-  }, [isTestMode, addLog]);
+  }, [isTestMode, addLog, applyPhaseTransition]);
 
   const leaveGame = () => {
     if (room) socketService.leaveRoom(room.roomCode);
