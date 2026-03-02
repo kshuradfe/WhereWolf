@@ -21,6 +21,30 @@ function parseJsonObject<T extends object>(val: unknown, fallback: T): T {
   return val && typeof val === "object" ? (val as T) : fallback;
 }
 
+function shuffleArray<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function initSpeakerQueue(playerIds: number[]): { currentSpeakerId: number | null; speakerQueue: string; speakerStartTime: Date | null } {
+  const shuffled = shuffleArray(playerIds);
+  if (shuffled.length === 0) return { currentSpeakerId: null, speakerQueue: JSON.stringify([]), speakerStartTime: null };
+  const first = shuffled.shift()!;
+  return {
+    currentSpeakerId: first,
+    speakerQueue: JSON.stringify(shuffled),
+    speakerStartTime: new Date(),
+  };
+}
+
+function clearSpeakerQueue(): { currentSpeakerId: null; speakerQueue: string; speakerStartTime: null } {
+  return { currentSpeakerId: null, speakerQueue: JSON.stringify([]), speakerStartTime: null };
+}
+
 interface NightAction { action: string; target: number | null }
 
 async function checkWinCondition(alive: number[], roomId: number): Promise<string | null> {
@@ -149,6 +173,7 @@ export async function POST(request: NextRequest) {
           deadPlayers: JSON.stringify(dead),
           nightActions: JSON.stringify({}),
           guardLastTarget: guardTarget,
+          ...clearSpeakerQueue(),
         });
         if (healTarget !== null) extraUpdate.witchHealUsed = true;
         if (poisonTarget !== null) extraUpdate.witchPoisonUsed = true;
@@ -180,8 +205,10 @@ export async function POST(request: NextRequest) {
           extraUpdate.electionState = "SIGNUP";
           extraUpdate.sheriffCandidates = JSON.stringify([]);
           extraUpdate.electionVotes = JSON.stringify({});
+          Object.assign(extraUpdate, clearSpeakerQueue());
         } else {
           nextPhase = "day";
+          Object.assign(extraUpdate, initSpeakerQueue(alive));
         }
         break;
       }
@@ -189,6 +216,7 @@ export async function POST(request: NextRequest) {
       // ─── DAY → VOTING ─────────────────────────────────────────
       case "day": {
         nextPhase = "voting";
+        Object.assign(extraUpdate, clearSpeakerQueue());
         break;
       }
 
@@ -244,6 +272,7 @@ export async function POST(request: NextRequest) {
         } else {
           nextPhase = "night";
           nextDay += 1;
+          Object.assign(extraUpdate, clearSpeakerQueue());
         }
         break;
       }
@@ -274,6 +303,7 @@ export async function POST(request: NextRequest) {
           nextPhase = "pass_badge";
         } else {
           nextPhase = "day";
+          Object.assign(extraUpdate, initSpeakerQueue(alive));
         }
         break;
       }
@@ -286,31 +316,34 @@ export async function POST(request: NextRequest) {
         switch (session.electionState) {
           case "SIGNUP": {
             if (candidates.length === 0) {
-              // Nobody signed up → no sheriff, go to day
               extraUpdate.sheriffBadgeDestroyed = true;
               nextPhase = "day";
+              Object.assign(extraUpdate, initSpeakerQueue(alive));
             } else if (candidates.length === 1) {
-              // Auto-elect the single candidate
               extraUpdate.sheriffId = candidates[0];
               extraUpdate.electionState = null;
               nextPhase = "day";
+              Object.assign(extraUpdate, initSpeakerQueue(alive));
             } else {
               extraUpdate.electionState = "SPEAKING";
               nextPhase = "election";
+              Object.assign(extraUpdate, initSpeakerQueue(candidates));
             }
             break;
           }
 
           case "SPEAKING": {
-            // After speaking phase, check remaining candidates (withdrawals already applied via election API)
+            Object.assign(extraUpdate, clearSpeakerQueue());
             if (candidates.length === 0) {
               extraUpdate.sheriffBadgeDestroyed = true;
               extraUpdate.electionState = null;
               nextPhase = "day";
+              Object.assign(extraUpdate, initSpeakerQueue(alive));
             } else if (candidates.length === 1) {
               extraUpdate.sheriffId = candidates[0];
               extraUpdate.electionState = null;
               nextPhase = "day";
+              Object.assign(extraUpdate, initSpeakerQueue(alive));
             } else {
               extraUpdate.electionState = "VOTING";
               extraUpdate.electionVotes = JSON.stringify({});
@@ -320,7 +353,6 @@ export async function POST(request: NextRequest) {
           }
 
           case "VOTING": {
-            // Tally election votes
             const tally = new Map<number, number>();
             Object.values(electionVotes).forEach((target) => {
               if (typeof target === "number") {
@@ -332,6 +364,7 @@ export async function POST(request: NextRequest) {
               extraUpdate.sheriffBadgeDestroyed = true;
               extraUpdate.electionState = null;
               nextPhase = "day";
+              Object.assign(extraUpdate, initSpeakerQueue(alive));
               break;
             }
 
@@ -343,12 +376,13 @@ export async function POST(request: NextRequest) {
               extraUpdate.sheriffId = tied[0][0];
               extraUpdate.electionState = null;
               nextPhase = "day";
+              Object.assign(extraUpdate, initSpeakerQueue(alive));
             } else {
-              // Tie → PK between tied candidates
               extraUpdate.electionState = "PK";
               extraUpdate.sheriffCandidates = JSON.stringify(tied.map(([id]) => id));
               extraUpdate.electionVotes = JSON.stringify({});
               nextPhase = "election";
+              Object.assign(extraUpdate, initSpeakerQueue(tied.map(([id]) => id)));
             }
             break;
           }
@@ -362,10 +396,10 @@ export async function POST(request: NextRequest) {
             });
 
             if (tally.size === 0) {
-              // No votes cast in PK → badge lost
               extraUpdate.sheriffBadgeDestroyed = true;
               extraUpdate.electionState = null;
               nextPhase = "day";
+              Object.assign(extraUpdate, initSpeakerQueue(alive));
               break;
             }
 
@@ -376,11 +410,11 @@ export async function POST(request: NextRequest) {
             if (tied.length === 1) {
               extraUpdate.sheriffId = tied[0][0];
             } else {
-              // Still tied → badge lost
               extraUpdate.sheriffBadgeDestroyed = true;
             }
             extraUpdate.electionState = null;
             nextPhase = "day";
+            Object.assign(extraUpdate, initSpeakerQueue(alive));
             break;
           }
 
@@ -408,15 +442,19 @@ export async function POST(request: NextRequest) {
         if (pending === "night") {
           nextPhase = "night";
           nextDay += 1;
+          Object.assign(extraUpdate, clearSpeakerQueue());
         } else if (pending === "election") {
           nextPhase = "election";
           extraUpdate.electionState = "SIGNUP";
           extraUpdate.sheriffCandidates = JSON.stringify([]);
           extraUpdate.electionVotes = JSON.stringify({});
+          Object.assign(extraUpdate, clearSpeakerQueue());
         } else if (pending === "day") {
           nextPhase = "day";
+          Object.assign(extraUpdate, initSpeakerQueue(alive));
         } else {
           nextPhase = "day";
+          Object.assign(extraUpdate, initSpeakerQueue(alive));
         }
 
         winner = await checkWinCondition(alive, session.roomId);

@@ -213,6 +213,19 @@ class SocketService {
     }
   }
 
+  // Speaker turn changes
+  emitTurnChanged(roomCode: string, currentSpeakerId: number | null) {
+    if (this.socket) {
+      this.socket.emit("turn-changed", { roomCode, currentSpeakerId });
+    }
+  }
+
+  onTurnChanged(callback: SocketCallback) {
+    if (this.socket) {
+      this.socket.on("turn-changed", callback);
+    }
+  }
+
   // Cleanup
   removeAllListeners() {
     if (this.socket) {

@@ -52,6 +52,9 @@ export interface GameSessionType {
   electionVotes: Record<number, number>;
   sheriffBadgeDestroyed: boolean;
   pendingPhase: string | null;
+  currentSpeakerId: number | null;
+  speakerQueue: number[];
+  speakerStartTime: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }

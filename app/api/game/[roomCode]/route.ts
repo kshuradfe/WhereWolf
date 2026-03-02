@@ -85,6 +85,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       ),
       sheriffCandidates: parseJsonArray(session.sheriffCandidates as unknown),
       electionVotes: parseJsonObject<Record<number, number>>(session.electionVotes as unknown, {}),
+      speakerQueue: parseJsonArray(session.speakerQueue as unknown),
+      currentSpeakerId: session.currentSpeakerId,
+      speakerStartTime: session.speakerStartTime,
     };
 
     return NextResponse.json({ success: true, data: { room: normalizedRoom, session: normalizedSession } });

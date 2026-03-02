@@ -17,6 +17,8 @@ interface PlayerCardProps {
   onSelect: () => void;
   isSheriff?: boolean;
   isCandidate?: boolean;
+  isSpeaking?: boolean;
+  isCurrentSpeaker?: boolean;
 }
 
 export default function PlayerCard({
@@ -32,11 +34,17 @@ export default function PlayerCard({
   onSelect,
   isSheriff = false,
   isCandidate = false,
+  isSpeaking = false,
+  isCurrentSpeaker = false,
 }: PlayerCardProps) {
   const isMe = index === currentPlayerId;
 
   let borderClass = "border-gray-600";
-  if (isSelected) {
+  if (isSpeaking) {
+    borderClass = "border-green-400 shadow-green-400/50 shadow-lg";
+  } else if (isCurrentSpeaker) {
+    borderClass = "border-amber-400 shadow-amber-400/30 shadow-md";
+  } else if (isSelected) {
     borderClass = "border-yellow-400 shadow-yellow-400 shadow-lg";
   } else if (!isAlive) {
     borderClass = "border-red-600";
@@ -91,6 +99,12 @@ export default function PlayerCard({
       )}
       {isCandidate && !isSheriff && (
         <div className="absolute -top-1 -left-1 bg-amber-600 text-white text-xs px-1.5 py-0.5 rounded font-bold">🙋</div>
+      )}
+      {isCurrentSpeaker && (
+        <div className="absolute -bottom-2 -right-2 text-lg drop-shadow-lg animate-bounce" title="Speaking">🎤</div>
+      )}
+      {isSpeaking && !isCurrentSpeaker && (
+        <div className="absolute -bottom-1 right-0 w-3 h-3 rounded-full bg-green-400 animate-pulse border border-green-300" title="Audio active" />
       )}
       {isMe && (
         <div className="absolute top-1 right-1 bg-blue-500 text-white text-xs px-2 py-1 rounded font-bold">YOU</div>

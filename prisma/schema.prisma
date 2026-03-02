@@ -69,6 +69,9 @@ model GameSession {
   electionVotes       String    @default("{}")
   sheriffBadgeDestroyed Boolean @default(false)
   pendingPhase        String?
+  currentSpeakerId    Int?
+  speakerQueue        String    @default("[]")
+  speakerStartTime    DateTime?
   gameLog             GameLog[]
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt

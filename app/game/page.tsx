@@ -18,6 +18,7 @@ import { GamePhaseEnum, ElectionStateEnum, LocalStorageKeyEnum, RouteEnum } from
 import type { ApiResponse, CharacterType, GameSessionType, PlayerType, RoomType } from "@/lib/types";
 import { getBotNightAction, getBotVoteTarget, getBotGuardTarget, getBotHunterShootTarget, getBotElectionSignup, getBotElectionVote, isBotPlayer, randomDelay } from "@/lib/botLogic";
 import ElectionPhaseActions from "@/components/game/ElectionPhaseActions";
+import VoiceChat from "@/components/game/VoiceChat";
 
 export default function GamePage() {
   const router = useRouter();
@@ -45,6 +46,7 @@ export default function GamePage() {
   const [wolfSelections, setWolfSelections] = useState<Record<number, number | null>>({});
   const [revealedTarget, setRevealedTarget] = useState<{ playerId: number; isWolf: boolean } | null>(null);
   const [botsActing, setBotsActing] = useState(false);
+  const [speakingParticipants, setSpeakingParticipants] = useState<string[]>([]);
   const isTestMode = typeof window !== "undefined" && localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true";
 
   // Refs for latest state inside callbacks/timeouts
@@ -68,6 +70,11 @@ export default function GamePage() {
   const isHunter = role ? (role.name.toLowerCase() === "hunter" || role.name === "猎人") : false;
 
   const isSheriff = session?.sheriffId === me;
+  const isCurrentSpeaker = session?.currentSpeakerId === me;
+  const currentSpeakerName = session?.currentSpeakerId != null
+    ? (players[session.currentSpeakerId]?.name || `Player ${session.currentSpeakerId + 1}`)
+    : null;
+  const SPEAK_DURATION = 30;
 
   // Simultaneous night actions: any role with a night ability can act immediately
   const hasNightAction = isWerewolf || isSeer || isWitch || isGuard;
@@ -197,6 +204,10 @@ export default function GamePage() {
             } else if (data.phase === GamePhaseEnum.PASS_BADGE) {
               setTimeout(() => runBotPassBadge(), 1200);
             }
+            // Auto-skip bot speakers during day/election speaking
+            if (data.phase === GamePhaseEnum.DAY || data.phase === GamePhaseEnum.ELECTION) {
+              setTimeout(() => runBotEndTurn(), 2000);
+            }
           }
         });
       }
@@ -227,6 +238,15 @@ export default function GamePage() {
     });
     socketService.onElectionUpdate(() => {
       if (roomCode) fetchState(roomCode);
+    });
+    socketService.onTurnChanged(() => {
+      if (roomCode) {
+        fetchState(roomCode).then(() => {
+          if (localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true") {
+            setTimeout(() => runBotEndTurn(), 500);
+          }
+        });
+      }
     });
     socketService.onWolfSelection((...args) => {
       const data = args[0] as { playerId: number; targetId: number | null };
@@ -832,6 +852,89 @@ export default function GamePage() {
     botActingRef.current = false;
   }, [isTestMode, addLog, applyPhaseTransition]);
 
+  // ── End Turn (pass mic to next speaker) ─────────────────
+  const endSpeakerTurn = useCallback(async () => {
+    if (!session || !room) return;
+    try {
+      const api = getApiService();
+      const res: ApiResponse<{
+        currentSpeakerId: number | null;
+        speakerQueue: number[];
+        speakerStartTime: string | null;
+        queueEmpty: boolean;
+        nextAction?: string;
+      }> = await api.post("/api/game/end-turn", {
+        sessionId: session.id,
+        playerId: session.currentSpeakerId,
+      });
+
+      if (res.success && res.data) {
+        socketService.emitTurnChanged(room.roomCode, res.data.currentSpeakerId);
+        fetchState(room.roomCode);
+
+        if (res.data.queueEmpty) {
+          // All speakers done — advance to next phase
+          if (res.data.nextAction === "advance_voting" || res.data.nextAction === "advance_election") {
+            setTimeout(() => advancePhase(), 500);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("End turn failed", e);
+    }
+  }, [session, room, fetchState, advancePhase]);
+
+  const handleSpeakerTimerEnd = useCallback(() => {
+    if (!session || !room) return;
+    const isAdmin = players[me]?.isAdmin;
+    if (isAdmin || isCurrentSpeaker) {
+      endSpeakerTurn();
+    }
+  }, [session, room, players, me, isCurrentSpeaker, endSpeakerTurn]);
+
+  // ── Bot auto-end-turn: if a bot is the current speaker, skip after delay ──
+  const runBotEndTurn = useCallback(async () => {
+    if (!isTestMode) return;
+    const s = sessionRef.current;
+    const r = roomRef.current;
+    const p = playersRef.current;
+    if (!s || !r || s.currentSpeakerId === null) return;
+    if (!isBotPlayer(p[s.currentSpeakerId]?.name ?? null)) return;
+
+    await randomDelay(1500, 3000);
+    // Re-check: state may have changed
+    const latestSession = sessionRef.current;
+    if (!latestSession || latestSession.currentSpeakerId === null) return;
+    if (!isBotPlayer(p[latestSession.currentSpeakerId]?.name ?? null)) return;
+
+    try {
+      const api = getApiService();
+      const res: ApiResponse<{
+        currentSpeakerId: number | null;
+        speakerQueue: number[];
+        queueEmpty: boolean;
+        nextAction?: string;
+      }> = await api.post("/api/game/end-turn", {
+        sessionId: latestSession.id,
+        playerId: latestSession.currentSpeakerId,
+      });
+
+      if (res.success && res.data) {
+        socketService.emitTurnChanged(r.roomCode, res.data.currentSpeakerId);
+        await fetchState(r.roomCode);
+
+        if (res.data.queueEmpty && res.data.nextAction) {
+          setTimeout(() => advancePhase(), 500);
+        } else if (res.data.currentSpeakerId !== null) {
+          // Next speaker might also be a bot; chain the call
+          setTimeout(() => runBotEndTurn(), 500);
+        }
+      }
+    } catch (e) {
+      console.error("Bot end-turn failed", e);
+    }
+  }, [isTestMode, fetchState, advancePhase]);
+
   const leaveGame = () => {
     if (room) socketService.leaveRoom(room.roomCode);
     localStorage.removeItem(LocalStorageKeyEnum.ROOM_CODE);
@@ -876,7 +979,35 @@ export default function GamePage() {
           phase={phase}
           onTimerEnd={advancePhase}
           onLeaveGame={leaveGame}
+          currentSpeakerId={session.currentSpeakerId}
+          speakerStartTime={session.speakerStartTime}
+          speakerName={currentSpeakerName}
+          speakDuration={SPEAK_DURATION}
+          onSpeakerTimerEnd={handleSpeakerTimerEnd}
         />
+        {/* Voice Chat Bar */}
+        <div className="bg-slate-800/90 border-b border-orange-500/20 px-4 py-2 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <VoiceChat
+              sessionId={session.id}
+              playerId={me}
+              playerName={players[me]?.name || `Player ${me + 1}`}
+              phase={phase}
+              currentSpeakerId={session.currentSpeakerId}
+              isCurrentSpeaker={isCurrentSpeaker}
+              onEndTurn={endSpeakerTurn}
+              onSpeakingChange={setSpeakingParticipants}
+            />
+          </div>
+          {session.currentSpeakerId != null && (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-gray-400">Queue:</span>
+              <span className="text-amber-200 font-semibold">
+                {session.speakerQueue.length} remaining
+              </span>
+            </div>
+          )}
+        </div>
         <div className="flex-1 flex gap-4 p-4 overflow-hidden">
           <RolePanel role={role} isRevealed={reveal} onToggleReveal={() => setReveal(!reveal)} />
           <div className="flex-1 bg-slate-900/80 backdrop-blur-sm rounded-xl border border-orange-500/30 p-6 overflow-y-auto">
@@ -929,6 +1060,8 @@ export default function GamePage() {
                       onSelect={() => selectable(idx) && !isGuardBlocked && setTarget(idx)}
                       isSheriff={session.sheriffId === idx}
                       isCandidate={session.sheriffCandidates.includes(idx)}
+                      isSpeaking={speakingParticipants.includes(`player-${idx}`)}
+                      isCurrentSpeaker={session.currentSpeakerId === idx}
                     />
                     {selectedTarget && idx !== me && (
                       <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-red-600 text-white text-xs px-2 py-1 rounded-full whitespace-nowrap">
@@ -1078,6 +1211,27 @@ export default function GamePage() {
                         💥 立即自爆
                       </button>
                     )}
+                    {/* Speaker turn info during SPEAKING sub-phase */}
+                    {session.electionState === "SPEAKING" && session.currentSpeakerId != null && (
+                      <div className="p-3 bg-amber-900/30 rounded-lg border border-amber-500/30">
+                        <p className="text-amber-200 text-sm font-semibold">
+                          🎤 {currentSpeakerName} 正在警上发言
+                          {session.speakerQueue.length > 0 && (
+                            <span className="text-amber-100/70 font-normal ml-2">
+                              (剩余 {session.speakerQueue.length} 人)
+                            </span>
+                          )}
+                        </p>
+                        {isCurrentSpeaker && (
+                          <button
+                            className="mt-2 w-full px-4 py-2 text-sm rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold transition-colors"
+                            onClick={endSpeakerTurn}
+                          >
+                            结束发言 / 过麦 ⏭️
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <ElectionPhaseActions
                       electionState={session.electionState}
                       submitted={submitted}
@@ -1145,6 +1299,27 @@ export default function GamePage() {
                       >
                         💥 立即自爆
                       </button>
+                    )}
+                    {/* Speaker turn info */}
+                    {session.currentSpeakerId != null && (
+                      <div className="p-3 bg-amber-900/30 rounded-lg border border-amber-500/30">
+                        <p className="text-amber-200 text-sm font-semibold">
+                          🎤 {currentSpeakerName} 正在发言
+                          {session.speakerQueue.length > 0 && (
+                            <span className="text-amber-100/70 font-normal ml-2">
+                              (剩余 {session.speakerQueue.length} 人)
+                            </span>
+                          )}
+                        </p>
+                        {isCurrentSpeaker && (
+                          <button
+                            className="mt-2 w-full px-4 py-2 text-sm rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold transition-colors"
+                            onClick={endSpeakerTurn}
+                          >
+                            结束发言 / 过麦 ⏭️
+                          </button>
+                        )}
+                      </div>
                     )}
                     <DayPhaseActions
                       chatMessages={chatMessages}
