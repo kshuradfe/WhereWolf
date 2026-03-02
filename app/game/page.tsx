@@ -881,16 +881,26 @@ export default function GamePage() {
         fetchState(room.roomCode);
 
         if (res.data.queueEmpty) {
-          // All speakers done — advance to next phase
           if (res.data.nextAction === "advance_voting" || res.data.nextAction === "advance_election") {
-            setTimeout(() => advancePhase(), 500);
+            // 直接调用后端 API，绕过 advancePhase() 的房主权限拦截
+            setTimeout(async () => {
+              try {
+                const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+                  await api.post("/api/game/phase", { sessionId: session.id });
+                if (phaseRes.success && phaseRes.data) {
+                  applyPhaseTransition(room.roomCode, phaseRes.data.phase, phaseRes.data.dayNumber, phaseRes.data.winner);
+                }
+              } catch (e) {
+                console.error("Auto advance phase failed", e);
+              }
+            }, 500);
           }
         }
       }
     } catch (e) {
       console.error("End turn failed", e);
     }
-  }, [session, room, fetchState, advancePhase]);
+  }, [session, room, fetchState, applyPhaseTransition]);
 
   const handleSpeakerTimerEnd = useCallback(() => {
     if (!session || !room) return;
@@ -909,7 +919,7 @@ export default function GamePage() {
     if (!s || !r || s.currentSpeakerId === null) return;
     if (!isBotPlayer(p[s.currentSpeakerId]?.name ?? null)) return;
 
-    await randomDelay(100, 300); // 测试模式：极短延迟后直接过麦
+    await randomDelay(100, 300);
     // Re-check: state may have changed
     const latestSession = sessionRef.current;
     if (!latestSession || latestSession.currentSpeakerId === null) return;
@@ -932,7 +942,18 @@ export default function GamePage() {
         await fetchState(r.roomCode);
 
         if (res.data.queueEmpty && res.data.nextAction) {
-          setTimeout(() => advancePhase(), 500);
+          // 直接调用后端 API，绕过 advancePhase() 的房主权限拦截
+          setTimeout(async () => {
+            try {
+              const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+                await api.post("/api/game/phase", { sessionId: latestSession.id });
+              if (phaseRes.success && phaseRes.data) {
+                applyPhaseTransition(r.roomCode, phaseRes.data.phase, phaseRes.data.dayNumber, phaseRes.data.winner);
+              }
+            } catch (e) {
+              console.error("Bot auto advance phase failed", e);
+            }
+          }, 500);
         } else if (res.data.currentSpeakerId !== null) {
           // Next speaker might also be a bot; chain the call
           setTimeout(() => runBotEndTurn(), 500);
@@ -941,7 +962,7 @@ export default function GamePage() {
     } catch (e) {
       console.error("Bot end-turn failed", e);
     }
-  }, [isTestMode, fetchState, advancePhase]);
+  }, [isTestMode, fetchState, applyPhaseTransition]);
 
   useEffect(() => {
     runBotEndTurnRef.current = runBotEndTurn;
