@@ -11,6 +11,7 @@ export enum LocalStorageKeyEnum {
   USERNAME = "username",
   ROOM_CODE = "room_code",
   PLAYER_ID = "player_id",
+  TEST_MODE = "test_mode",
 }
 
 export enum GamePhaseEnum {

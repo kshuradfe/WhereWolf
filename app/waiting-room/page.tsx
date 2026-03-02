@@ -11,12 +11,14 @@ import { getApiService } from "@/services/apiService";
 import { socketService } from "@/services/socketService";
 import { ApiResponse, CharacterType, PlayerType, RoomType } from "@/lib/types";
 import { LocalStorageKeyEnum, RouteEnum } from "@/lib/enums";
+import { isBotPlayer } from "@/lib/botLogic";
 
 export default function WaitingRoomPage() {
   const router = useRouter();
   const [room, setRoom] = useState<RoomType | null>(null);
   const [characters, setCharacters] = useState<CharacterType[]>([]);
   const [isLeaveDialogOpen, setIsLeaveDialogOpen] = useState<boolean>(false);
+  const [isFillingBots, setIsFillingBots] = useState<boolean>(false);
   const [playerId] = useState<number>(() => {
     if (typeof window !== "undefined") {
       const storedPlayerId = localStorage.getItem(LocalStorageKeyEnum.PLAYER_ID);
@@ -24,6 +26,24 @@ export default function WaitingRoomPage() {
     }
     return -1;
   });
+  const isTestMode = typeof window !== "undefined" && localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true";
+
+  const fillBots = useCallback(
+    async (roomCode: string) => {
+      try {
+        setIsFillingBots(true);
+        const apiService = getApiService();
+        await apiService.post(`/api/rooms/${roomCode}/fill-bots`, {});
+        await fetchRoomData(roomCode);
+      } catch {
+        toast.error("Failed to fill bots");
+      } finally {
+        setIsFillingBots(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
 
   // Fetch roles used in this room
   const fetchCharacters = useCallback(async () => {
@@ -92,15 +112,19 @@ export default function WaitingRoomPage() {
   );
 
   useEffect(() => {
-    // Use setTimeout to avoid cascading state updates
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
       fetchCharacters();
 
       const roomCode = localStorage.getItem(LocalStorageKeyEnum.ROOM_CODE);
-      if (roomCode) {
-        fetchRoomData(roomCode);
-      } else {
+      if (!roomCode) {
         router.push(RouteEnum.HOME);
+        return;
+      }
+
+      await fetchRoomData(roomCode);
+
+      if (localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true") {
+        await fillBots(roomCode);
       }
     }, 0);
 
@@ -270,6 +294,12 @@ export default function WaitingRoomPage() {
                       </div>
                     )}
 
+                    {isBotPlayer(player.name) && (
+                      <div className="absolute top-1 left-1 bg-purple-600 text-white text-xs px-2 py-1 rounded font-bold">
+                        BOT
+                      </div>
+                    )}
+
                     {isCurrentPlayer && (
                       <div className="absolute top-1 right-1 bg-blue-500 text-white text-xs px-2 py-1 rounded font-bold">
                         YOU
@@ -307,12 +337,22 @@ export default function WaitingRoomPage() {
               </div>
             </div>
 
+            {isTestMode && (
+              <div className="mt-4 px-3 py-2 bg-purple-900/60 border border-purple-500 rounded text-purple-200 text-xs text-center">
+                🤖 Test Mode — Bots auto-filled
+              </div>
+            )}
+
             {isAdmin && (
-              <div className="mt-6">
-                <Button className="w-full px-6 py-3" onClick={handleStartGame} disabled={!allPlayersJoined}>
-                  {allPlayersJoined ? "Start Game" : "Waiting..."}
+              <div className="mt-4">
+                <Button
+                  className="w-full px-6 py-3"
+                  onClick={handleStartGame}
+                  disabled={!allPlayersJoined || isFillingBots}
+                >
+                  {isFillingBots ? "Filling bots..." : allPlayersJoined ? "Start Game" : "Waiting..."}
                 </Button>
-                {!allPlayersJoined && (
+                {!allPlayersJoined && !isFillingBots && (
                   <p className="text-orange-300 text-sm text-center mt-2">All players must join before starting</p>
                 )}
               </div>

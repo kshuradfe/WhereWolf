@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "react-toastify";
 import AnimatedBackground from "@/components/game/AnimatedBackground";
@@ -16,6 +16,7 @@ import { getApiService } from "@/services/apiService";
 import { socketService } from "@/services/socketService";
 import { GamePhaseEnum, LocalStorageKeyEnum, RouteEnum } from "@/lib/enums";
 import type { ApiResponse, CharacterType, GameSessionType, PlayerType, RoomType } from "@/lib/types";
+import { getBotNightAction, getBotVoteTarget, isBotPlayer, randomDelay } from "@/lib/botLogic";
 
 export default function GamePage() {
   const router = useRouter();
@@ -43,6 +44,21 @@ export default function GamePage() {
   const [wolfSelections, setWolfSelections] = useState<Record<number, number | null>>({});
   const [nightActionsSubmitted, setNightActionsSubmitted] = useState<Set<number>>(new Set());
   const [revealedTarget, setRevealedTarget] = useState<{ playerId: number; role: CharacterType } | null>(null);
+  const [botsActing, setBotsActing] = useState(false);
+  const isTestMode = typeof window !== "undefined" && localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true";
+
+  // Refs to always access the latest state inside callbacks/timeouts (avoids stale closures)
+  const sessionRef = useRef<GameSessionType | null>(null);
+  const roomRef = useRef<RoomType | null>(null);
+  const playersRef = useRef<PlayerType[]>([]);
+  const allCharactersRef = useRef<CharacterType[]>([]);
+
+  const advancePhaseRef = useRef<() => Promise<void>>(async () => {});
+
+  useEffect(() => { sessionRef.current = session; }, [session]);
+  useEffect(() => { roomRef.current = room; }, [room]);
+  useEffect(() => { playersRef.current = players; }, [players]);
+  useEffect(() => { allCharactersRef.current = allCharacters; }, [allCharacters]);
 
   // Derived
   const isAlive = useMemo(() => (session ? session.alivePlayers.includes(me) : true), [session, me]);
@@ -134,7 +150,14 @@ export default function GamePage() {
 
   useEffect(() => {
     const code = localStorage.getItem(LocalStorageKeyEnum.ROOM_CODE);
-    if (code) fetchState(code);
+    if (code) {
+      fetchState(code).then(() => {
+        if (localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true") {
+          // First night: give state time to settle then run bot actions
+          setTimeout(() => runBotNightActions(), 2000);
+        }
+      });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -148,11 +171,21 @@ export default function GamePage() {
       setSubmitted(false);
       setTarget(null);
       setChatMessages([]);
-      setWolfSelections({}); // Reset wolf selections on phase change
-      setNightActionsSubmitted(new Set()); // Reset night actions tracking
-      setRevealedTarget(null); // Reset revealed target
+      setWolfSelections({});
+      setNightActionsSubmitted(new Set());
+      setRevealedTarget(null);
       addLog(`Phase → ${data.phase} (Day ${data.dayNumber})`);
-      if (roomCode) fetchState(roomCode);
+      if (roomCode) {
+        fetchState(roomCode).then(() => {
+          if (localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true") {
+            if (data.phase === GamePhaseEnum.NIGHT) {
+              setTimeout(() => runBotNightActions(), 1200);
+            } else if (data.phase === GamePhaseEnum.VOTING) {
+              setTimeout(() => runBotVotes(), 1200);
+            }
+          }
+        });
+      }
     });
     socketService.onPlayerEliminated((...args) => {
       const data = args[0] as { playerId: number };
@@ -329,10 +362,90 @@ export default function GamePage() {
     }
   }, [session, room, players, me, day]);
 
+  // Keep advancePhaseRef in sync so bot callbacks always call the latest version
+  useEffect(() => { advancePhaseRef.current = advancePhase; }, [advancePhase]);
+
+  const runBotNightActions = useCallback(async () => {
+    if (!isTestMode) return;
+    // Read latest state via refs to avoid stale closure
+    const currentSession = sessionRef.current;
+    const currentRoom = roomRef.current;
+    const currentPlayers = playersRef.current;
+    const currentCharacters = allCharactersRef.current;
+
+    if (!currentSession || !currentRoom) return;
+
+    setBotsActing(true);
+    addLog("[Test Mode] Bots are acting at night...");
+    const api = getApiService();
+
+    const botIndices = currentSession.alivePlayers.filter((i) => isBotPlayer(currentPlayers[i]?.name ?? null));
+
+    for (const botIdx of botIndices) {
+      const botRoleId = currentPlayers[botIdx]?.role;
+      const botRole = currentCharacters.find((c) => c.id === botRoleId);
+      if (!botRole) continue;
+
+      const { action, targetId } = getBotNightAction(botIdx, botRole, currentSession.alivePlayers, currentPlayers, currentCharacters);
+      await randomDelay();
+      try {
+        await api.post("/api/game/action", {
+          sessionId: currentSession.id,
+          playerId: botIdx,
+          action,
+          targetId,
+        });
+        socketService.emitActionSubmitted(currentRoom.roomCode, botIdx);
+        setNightActionsSubmitted((prev) => new Set(prev).add(botIdx));
+      } catch (e) {
+        console.error(`Bot ${botIdx} night action failed`, e);
+      }
+    }
+
+    setBotsActing(false);
+    addLog("[Test Mode] Bots finished night actions. Advancing phase...");
+    setTimeout(() => advancePhaseRef.current(), 800);
+  }, [isTestMode, addLog]);
+
+  const runBotVotes = useCallback(async () => {
+    if (!isTestMode) return;
+    const currentSession = sessionRef.current;
+    const currentRoom = roomRef.current;
+    const currentPlayers = playersRef.current;
+
+    if (!currentSession || !currentRoom) return;
+
+    setBotsActing(true);
+    addLog("[Test Mode] Bots are voting...");
+    const api = getApiService();
+
+    const botIndices = currentSession.alivePlayers.filter((i) => isBotPlayer(currentPlayers[i]?.name ?? null));
+
+    for (const botIdx of botIndices) {
+      const targetId = getBotVoteTarget(botIdx, currentSession.alivePlayers);
+      if (targetId === null) continue;
+      await randomDelay();
+      try {
+        await api.post("/api/game/vote", {
+          sessionId: currentSession.id,
+          playerId: botIdx,
+          targetId,
+        });
+        socketService.emitVoteSubmitted(currentRoom.roomCode, botIdx);
+      } catch (e) {
+        console.error(`Bot ${botIdx} vote failed`, e);
+      }
+    }
+
+    setBotsActing(false);
+    addLog("[Test Mode] Bots finished voting.");
+  }, [isTestMode, addLog]);
+
   const leaveGame = () => {
     if (room) socketService.leaveRoom(room.roomCode);
     localStorage.removeItem(LocalStorageKeyEnum.ROOM_CODE);
     localStorage.removeItem(LocalStorageKeyEnum.PLAYER_ID);
+    localStorage.removeItem(LocalStorageKeyEnum.TEST_MODE);
     router.push(RouteEnum.HOME);
   };
 
@@ -352,6 +465,11 @@ export default function GamePage() {
   return (
     <AnimatedBackground phase={phase} className="">
       <div className="w-full h-screen flex flex-col overflow-hidden">
+        {isTestMode && (
+          <div className={`text-center text-xs px-4 py-1 font-semibold ${botsActing ? "bg-purple-700 text-white animate-pulse" : "bg-purple-900/70 text-purple-300"}`}>
+            {botsActing ? "🤖 [Test Mode] Bots are acting..." : "🤖 Test Mode Active"}
+          </div>
+        )}
         <GameHeader
           phaseLabel={phaseLabel}
           day={day}

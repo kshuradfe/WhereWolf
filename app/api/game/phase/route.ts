@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PrismaClient, GamePhase } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import { GamePhase } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 
 export async function POST(request: NextRequest) {
   try {
