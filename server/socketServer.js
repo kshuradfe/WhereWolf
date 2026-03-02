@@ -46,6 +46,10 @@ io.on('connection', (socket) => {
     io.to(roomCode).emit('phase-changed', { phase, dayNumber });
   });
 
+  socket.on('turn-changed', ({ roomCode, currentSpeakerId }) => {
+    io.to(roomCode).emit('turn-changed', { currentSpeakerId });
+  });
+
   socket.on('action-submitted', ({ roomCode, playerId }) => {
     io.to(roomCode).emit('action-submitted', { playerId });
   });

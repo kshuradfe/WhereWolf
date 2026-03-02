@@ -55,6 +55,7 @@ export default function GamePage() {
   const playersRef = useRef<PlayerType[]>([]);
   const allCharactersRef = useRef<CharacterType[]>([]);
   const botActingRef = useRef(false);
+  const runBotEndTurnRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { roomRef.current = room; }, [room]);
@@ -74,7 +75,6 @@ export default function GamePage() {
   const currentSpeakerName = session?.currentSpeakerId != null
     ? (players[session.currentSpeakerId]?.name || `Player ${session.currentSpeakerId + 1}`)
     : null;
-  const SPEAK_DURATION = 30;
 
   // Simultaneous night actions: any role with a night ability can act immediately
   const hasNightAction = isWerewolf || isSeer || isWitch || isGuard;
@@ -551,7 +551,13 @@ export default function GamePage() {
     setWolfSelections({});
     setRevealedTarget(null);
     addLog(`Phase → ${newPhase} (Day ${newDay})`);
-    fetchState(roomCode);
+    fetchState(roomCode).then(() => {
+      // 测试模式：进入 DAY/ELECTION 顺麦阶段时，直接触发 Bot 过麦（不依赖 Socket）
+      if (localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true" &&
+          (newPhase === GamePhaseEnum.DAY || newPhase === GamePhaseEnum.ELECTION)) {
+        setTimeout(() => runBotEndTurnRef.current(), 400);
+      }
+    });
     if (newWinner) {
       setWinner(newWinner);
       socketService.emitGameEnded(roomCode, newWinner);
@@ -608,6 +614,8 @@ export default function GamePage() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (res.data?.allActionsComplete || (res as any).allActionsComplete) allComplete = true;
       socketService.emitActionSubmitted(r.roomCode, botIdx);
+      // 立即刷新状态，确保女巫等角色能实时看到狼人刀人结果（Socket 可能未连接或不会回传发送方）
+      fetchState(r.roomCode);
     };
 
     for (const botIdx of otherBots) {
@@ -663,7 +671,7 @@ export default function GamePage() {
     }
 
     botActingRef.current = false;
-  }, [isTestMode, addLog, applyPhaseTransition]);
+  }, [isTestMode, addLog, applyPhaseTransition, fetchState]);
 
   const runBotVotes = useCallback(async () => {
     if (!isTestMode) return;
@@ -892,7 +900,7 @@ export default function GamePage() {
     }
   }, [session, room, players, me, isCurrentSpeaker, endSpeakerTurn]);
 
-  // ── Bot auto-end-turn: if a bot is the current speaker, skip after delay ──
+  // ── Bot auto-end-turn: 测试模式下 Bot 直接过麦，不等待发言时间 ──
   const runBotEndTurn = useCallback(async () => {
     if (!isTestMode) return;
     const s = sessionRef.current;
@@ -901,7 +909,7 @@ export default function GamePage() {
     if (!s || !r || s.currentSpeakerId === null) return;
     if (!isBotPlayer(p[s.currentSpeakerId]?.name ?? null)) return;
 
-    await randomDelay(1500, 3000);
+    await randomDelay(100, 300); // 测试模式：极短延迟后直接过麦
     // Re-check: state may have changed
     const latestSession = sessionRef.current;
     if (!latestSession || latestSession.currentSpeakerId === null) return;
@@ -934,6 +942,10 @@ export default function GamePage() {
       console.error("Bot end-turn failed", e);
     }
   }, [isTestMode, fetchState, advancePhase]);
+
+  useEffect(() => {
+    runBotEndTurnRef.current = runBotEndTurn;
+  }, [runBotEndTurn]);
 
   const leaveGame = () => {
     if (room) socketService.leaveRoom(room.roomCode);
@@ -975,14 +987,22 @@ export default function GamePage() {
           phaseLabel={phaseLabel}
           day={day}
           isAlive={isAlive}
-          timerLimit={room.timerLimit}
+          timerLimit={
+            phase === GamePhaseEnum.ELECTION && session.electionState === "SIGNUP"
+              ? 10
+              : phase === GamePhaseEnum.VOTING ||
+                (phase === GamePhaseEnum.ELECTION &&
+                  (session.electionState === "VOTING" || session.electionState === "PK"))
+                ? 15
+                : room.timerLimit
+          }
           phase={phase}
           onTimerEnd={advancePhase}
           onLeaveGame={leaveGame}
           currentSpeakerId={session.currentSpeakerId}
           speakerStartTime={session.speakerStartTime}
           speakerName={currentSpeakerName}
-          speakDuration={SPEAK_DURATION}
+          speakDuration={room.timerLimit}
           onSpeakerTimerEnd={handleSpeakerTimerEnd}
         />
         {/* Voice Chat Bar */}
