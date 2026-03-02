@@ -322,10 +322,13 @@ export async function POST(request: NextRequest) {
             } else if (candidates.length === 1) {
               extraUpdate.sheriffId = candidates[0];
               extraUpdate.electionState = null;
+              extraUpdate.initialCandidates = JSON.stringify(candidates);
               nextPhase = "day";
               Object.assign(extraUpdate, initSpeakerQueue(alive));
             } else {
               extraUpdate.electionState = "SPEAKING";
+              // Record who signed up so VOTING phase knows who the initial non-candidates are
+              extraUpdate.initialCandidates = JSON.stringify(candidates);
               nextPhase = "election";
               Object.assign(extraUpdate, initSpeakerQueue(candidates));
             }

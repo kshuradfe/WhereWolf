@@ -49,6 +49,7 @@ export interface GameSessionType {
   sheriffId: number | null;
   electionState: string | null;
   sheriffCandidates: number[];
+  initialCandidates: number[];
   electionVotes: Record<number, number>;
   sheriffBadgeDestroyed: boolean;
   pendingPhase: string | null;

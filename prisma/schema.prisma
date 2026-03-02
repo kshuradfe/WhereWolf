@@ -66,6 +66,7 @@ model GameSession {
   sheriffId           Int?
   electionState       String?
   sheriffCandidates   String    @default("[]")
+  initialCandidates   String?
   electionVotes       String    @default("{}")
   sheriffBadgeDestroyed Boolean @default(false)
   pendingPhase        String?

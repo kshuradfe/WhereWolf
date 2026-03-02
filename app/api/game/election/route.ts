@@ -92,12 +92,23 @@ export async function POST(request: NextRequest) {
         if (session.electionState !== "VOTING" && session.electionState !== "PK") {
           return NextResponse.json({ success: false, message: "Not in voting/PK phase" }, { status: 400 });
         }
-        if (candidates.includes(playerId)) {
-          return NextResponse.json({ success: false, message: "Candidates cannot vote" }, { status: 400 });
-        }
         if (targetId === undefined || targetId === null || !candidates.includes(targetId)) {
           return NextResponse.json({ success: false, message: "Invalid vote target" }, { status: 400 });
         }
+
+        if (session.electionState === "VOTING") {
+          // Only initial non-candidates (警下) may vote in the first round
+          const initialCandidates = parseJsonArray((session as Record<string, unknown>).initialCandidates as unknown);
+          if (initialCandidates.includes(playerId)) {
+            return NextResponse.json({ success: false, message: "Candidates and withdrawn players cannot vote in first round" }, { status: 400 });
+          }
+        } else {
+          // PK: anyone except the PK candidates themselves can vote
+          if (candidates.includes(playerId)) {
+            return NextResponse.json({ success: false, message: "PK candidates cannot vote" }, { status: 400 });
+          }
+        }
+
         electionVotes[String(playerId)] = targetId;
         await prisma.gameSession.update({
           where: { id: sessionId },
@@ -125,10 +136,17 @@ export async function POST(request: NextRequest) {
       allSignedUp = (signedUpCount + optedOutCount) >= alive.length;
     }
 
-    if (session.electionState === "VOTING" || session.electionState === "PK") {
+    if (session.electionState === "VOTING") {
+      // Eligible voters = alive players NOT in initialCandidates (initial 警下 only)
+      const initialCandidates = parseJsonArray((updatedSession as Record<string, unknown>)?.initialCandidates as unknown);
+      const voters = alive.filter((p) => !initialCandidates.includes(p));
+      const votedCount = voters.filter((v) => latestVotes[String(v)] !== undefined).length;
+      allVoted = voters.length > 0 && votedCount >= voters.length;
+    } else if (session.electionState === "PK") {
+      // Eligible voters = alive players NOT in current PK candidates
       const voters = alive.filter((p) => !latestCandidates.includes(p));
       const votedCount = voters.filter((v) => latestVotes[String(v)] !== undefined).length;
-      allVoted = votedCount >= voters.length;
+      allVoted = voters.length > 0 && votedCount >= voters.length;
     }
 
     return NextResponse.json({

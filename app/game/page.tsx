@@ -47,6 +47,7 @@ export default function GamePage() {
   const [revealedTarget, setRevealedTarget] = useState<{ playerId: number; isWolf: boolean } | null>(null);
   const [botsActing, setBotsActing] = useState(false);
   const [speakingParticipants, setSpeakingParticipants] = useState<string[]>([]);
+  const [prevElectionState, setPrevElectionState] = useState<string | null>(null);
   const isTestMode = typeof window !== "undefined" && localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true";
 
   // Refs for latest state inside callbacks/timeouts
@@ -61,6 +62,15 @@ export default function GamePage() {
   useEffect(() => { roomRef.current = room; }, [room]);
   useEffect(() => { playersRef.current = players; }, [players]);
   useEffect(() => { allCharactersRef.current = allCharacters; }, [allCharacters]);
+
+  // 竞选子阶段切换时重置提交状态，确保退水按钮可见
+  useEffect(() => {
+    if (session && session.electionState !== prevElectionState) {
+      setSubmitted(false);
+      setTarget(null);
+      setPrevElectionState(session.electionState);
+    }
+  }, [session, prevElectionState]);
 
   // Derived
   const isAlive = useMemo(() => (session ? session.alivePlayers.includes(me) : true), [session, me]);
@@ -761,61 +771,64 @@ export default function GamePage() {
 
     if (s.electionState === "SIGNUP") {
       addLog("[Test Mode] Bots deciding on sheriff election signup...");
+      let lastSignupRes: ApiResponse<{ allSignedUp?: boolean; allVoted?: boolean }> | null = null;
       for (const botIdx of botIndices) {
         const shouldSignup = getBotElectionSignup();
         await randomDelay();
         try {
-          await api.post("/api/game/election", {
+          lastSignupRes = await api.post("/api/game/election", {
             sessionId: s.id, playerId: botIdx,
             action: shouldSignup ? "signup" : "opt_out",
           });
           socketService.emitElectionUpdate(r.roomCode);
         } catch (e) { console.error(`Bot ${botIdx} election signup failed`, e); }
       }
-      // After all bots sign up, check if we need to advance
-      await randomDelay(500, 1000);
-      try {
-        const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
-          await api.post("/api/game/phase", { sessionId: s.id });
-        if (res.success && res.data) {
-          applyPhaseTransition(r.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
-        }
-      } catch (e) { console.error("Bot election phase advance failed", e); }
+      // 最后一个机器人提交后，如果全员已报名，由 allSignedUp 标志触发阶段推进（只发一次）
+      if (lastSignupRes?.data?.allSignedUp) {
+        await randomDelay(300, 600);
+        try {
+          const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+            await api.post("/api/game/phase", { sessionId: s.id });
+          if (phaseRes.success && phaseRes.data) {
+            applyPhaseTransition(r.roomCode, phaseRes.data.phase, phaseRes.data.dayNumber, phaseRes.data.winner);
+          }
+        } catch (e) { console.error("Bot election signup phase advance failed", e); }
+      }
     } else if (s.electionState === "SPEAKING") {
-      addLog("[Test Mode] Bots skipping speaking phase...");
-      // Bots don't withdraw; advance after delay
-      await randomDelay(500, 1000);
-      try {
-        const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
-          await api.post("/api/game/phase", { sessionId: s.id });
-        if (res.success && res.data) {
-          applyPhaseTransition(r.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
-        }
-      } catch (e) { console.error("Bot election speaking advance failed", e); }
+      // 发言阶段由顺麦（runBotEndTurn）驱动，结束后 end-turn 自动推进；此处只需等待
+      addLog("[Test Mode] Bots speaking phase handled by speaker queue...");
     } else if (s.electionState === "VOTING" || s.electionState === "PK") {
       addLog("[Test Mode] Bots voting in sheriff election...");
       const candidates = s.sheriffCandidates;
-      const voters = botIndices.filter((i) => !candidates.includes(i));
+      // VOTING：只有初始警下 bot 可投；PK：非 PK 候选人的 bot 可投
+      const initialCands = s.initialCandidates ?? [];
+      const voters = s.electionState === "PK"
+        ? botIndices.filter((i) => !candidates.includes(i))
+        : botIndices.filter((i) => !initialCands.includes(i));
+      let lastVoteRes: ApiResponse<{ allSignedUp?: boolean; allVoted?: boolean }> | null = null;
       for (const botIdx of voters) {
         const voteTarget = getBotElectionVote(candidates);
         if (voteTarget === null) continue;
         await randomDelay();
         try {
-          await api.post("/api/game/election", {
+          lastVoteRes = await api.post("/api/game/election", {
             sessionId: s.id, playerId: botIdx,
             action: "election_vote", targetId: voteTarget,
           });
           socketService.emitElectionUpdate(r.roomCode);
         } catch (e) { console.error(`Bot ${botIdx} election vote failed`, e); }
       }
-      await randomDelay(500, 1000);
-      try {
-        const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
-          await api.post("/api/game/phase", { sessionId: s.id });
-        if (res.success && res.data) {
-          applyPhaseTransition(r.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
-        }
-      } catch (e) { console.error("Bot election vote advance failed", e); }
+      // 全员投票完成后，由 allVoted 标志触发一次阶段推进（只发一次）
+      if (lastVoteRes?.data?.allVoted) {
+        await randomDelay(300, 600);
+        try {
+          const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+            await api.post("/api/game/phase", { sessionId: s.id });
+          if (phaseRes.success && phaseRes.data) {
+            applyPhaseTransition(r.roomCode, phaseRes.data.phase, phaseRes.data.dayNumber, phaseRes.data.winner);
+          }
+        } catch (e) { console.error("Bot election vote phase advance failed", e); }
+      }
     }
 
     setBotsActing(false);
@@ -989,7 +1002,10 @@ export default function GamePage() {
   const alive = (idx: number) => session.alivePlayers.includes(idx);
   const canElectionVote = phase === GamePhaseEnum.ELECTION &&
     (session.electionState === ElectionStateEnum.VOTING || session.electionState === ElectionStateEnum.PK) &&
-    isAlive && !submitted && !session.sheriffCandidates.includes(me);
+    isAlive && !submitted &&
+    (session.electionState === ElectionStateEnum.PK
+      ? !session.sheriffCandidates.includes(me)          // PK：非PK候选人均可投
+      : !session.initialCandidates.includes(me));          // 第一轮：仅初始警下可投
   const canPassBadge = phase === GamePhaseEnum.PASS_BADGE && isSheriff;
   const canSelect = phase === GamePhaseEnum.HUNTER_SHOOT
     ? (isHunter && !isAlive)
