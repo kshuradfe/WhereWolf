@@ -9,11 +9,14 @@ interface AnimatedBackgroundProps {
   children: ReactNode;
 }
 
-const BACKGROUND_IMAGES = {
+const BACKGROUND_IMAGES: Record<string, string> = {
   [GamePhaseEnum.WAITING]: "/images/village_daylight.jpg",
   [GamePhaseEnum.DAY]: "/images/village_daylight.jpg",
   [GamePhaseEnum.VOTING]: "/images/village_sunset.jpg",
   [GamePhaseEnum.NIGHT]: "/images/village_night.jpg",
+  [GamePhaseEnum.HUNTER_SHOOT]: "/images/village_night.jpg",
+  [GamePhaseEnum.ELECTION]: "/images/village_daylight.jpg",
+  [GamePhaseEnum.PASS_BADGE]: "/images/village_sunset.jpg",
   [GamePhaseEnum.ENDED]: "/images/village_sunset.jpg",
 };
 

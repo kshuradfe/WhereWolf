@@ -46,6 +46,12 @@ export interface GameSessionType {
   witchHealUsed: boolean;
   witchPoisonUsed: boolean;
   guardLastTarget: number | null;
+  sheriffId: number | null;
+  electionState: string | null;
+  sheriffCandidates: number[];
+  electionVotes: Record<number, number>;
+  sheriffBadgeDestroyed: boolean;
+  pendingPhase: string | null;
   createdAt: Date;
   updatedAt: Date;
 }

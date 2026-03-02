@@ -83,6 +83,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         session.nightActions as unknown,
         {}
       ),
+      sheriffCandidates: parseJsonArray(session.sheriffCandidates as unknown),
+      electionVotes: parseJsonObject<Record<number, number>>(session.electionVotes as unknown, {}),
     };
 
     return NextResponse.json({ success: true, data: { room: normalizedRoom, session: normalizedSession } });

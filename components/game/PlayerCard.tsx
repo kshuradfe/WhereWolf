@@ -15,6 +15,8 @@ interface PlayerCardProps {
   actualCharacter?: CharacterType;
   showActualRole: boolean;
   onSelect: () => void;
+  isSheriff?: boolean;
+  isCandidate?: boolean;
 }
 
 export default function PlayerCard({
@@ -28,6 +30,8 @@ export default function PlayerCard({
   actualCharacter,
   showActualRole,
   onSelect,
+  isSheriff = false,
+  isCandidate = false,
 }: PlayerCardProps) {
   const isMe = index === currentPlayerId;
 
@@ -82,10 +86,16 @@ export default function PlayerCard({
       )}
 
       {/* Tags */}
+      {isSheriff && (
+        <div className="absolute -top-2 -right-2 text-xl drop-shadow-lg" title="Sheriff">🌟</div>
+      )}
+      {isCandidate && !isSheriff && (
+        <div className="absolute -top-1 -left-1 bg-amber-600 text-white text-xs px-1.5 py-0.5 rounded font-bold">🙋</div>
+      )}
       {isMe && (
         <div className="absolute top-1 right-1 bg-blue-500 text-white text-xs px-2 py-1 rounded font-bold">YOU</div>
       )}
-      {player.isAdmin && (
+      {player.isAdmin && !isSheriff && (
         <div className="absolute top-1 left-1 bg-yellow-500 text-black text-xs px-2 py-1 rounded font-bold">HOST</div>
       )}
       {!isAlive && (

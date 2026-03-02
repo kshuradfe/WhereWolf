@@ -110,4 +110,18 @@ export function getBotHunterShootTarget(hunterIndex: number, alivePlayers: numbe
   return targets.length > 0 ? randomFrom(targets) : null;
 }
 
+/**
+ * Election signup: 50% chance the bot runs for sheriff.
+ */
+export function getBotElectionSignup(): boolean {
+  return Math.random() > 0.5;
+}
+
+/**
+ * Election vote: pick a random candidate.
+ */
+export function getBotElectionVote(candidates: number[]): number | null {
+  return candidates.length > 0 ? randomFrom(candidates) : null;
+}
+
 export { randomDelay };

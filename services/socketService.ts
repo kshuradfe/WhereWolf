@@ -174,6 +174,32 @@ class SocketService {
     }
   }
 
+  // Blow-up (self-destruct)
+  emitPlayerBlewUp(roomCode: string, playerId: number) {
+    if (this.socket) {
+      this.socket.emit("player-blew-up", { roomCode, playerId });
+    }
+  }
+
+  onPlayerBlewUp(callback: SocketCallback) {
+    if (this.socket) {
+      this.socket.on("player-blew-up", callback);
+    }
+  }
+
+  // Election
+  emitElectionUpdate(roomCode: string) {
+    if (this.socket) {
+      this.socket.emit("election-update", { roomCode });
+    }
+  }
+
+  onElectionUpdate(callback: SocketCallback) {
+    if (this.socket) {
+      this.socket.on("election-update", callback);
+    }
+  }
+
   // Night coordination
   emitWolfSelect(roomCode: string, playerId: number, targetId: number | null) {
     if (this.socket) {

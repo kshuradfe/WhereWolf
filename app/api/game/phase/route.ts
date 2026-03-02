@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { GamePhase } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
-// God roles that count for 屠边 win condition
 const GOD_ROLE_NAMES = ["seer", "witch", "hunter", "guard", "预言家", "女巫", "猎人", "守卫"];
 
 function parseJsonArray(val: unknown): number[] {
@@ -24,14 +23,7 @@ function parseJsonObject<T extends object>(val: unknown, fallback: T): T {
 
 interface NightAction { action: string; target: number | null }
 
-/**
- * Check win condition (屠边局).
- * Returns "villager" | "werewolf" | null.
- */
-async function checkWinCondition(
-  alive: number[],
-  roomId: number
-): Promise<string | null> {
+async function checkWinCondition(alive: number[], roomId: number): Promise<string | null> {
   const room = await prisma.rooms.findUnique({ where: { id: roomId } });
   if (!room) return null;
 
@@ -44,22 +36,15 @@ async function checkWinCondition(
   const roles = await prisma.roles.findMany();
   const roleMap = new Map(roles.map((r) => [r.id, r]));
 
-  let aliveWolves = 0;
-  let aliveGods = 0;
-  let aliveVillagers = 0;
-
+  let aliveWolves = 0, aliveGods = 0, aliveVillagers = 0;
   for (const idx of alive) {
     const roleId = playersData[idx]?.role;
     if (!roleId) continue;
     const role = roleMap.get(roleId);
     if (!role) continue;
-    if (role.team === "werewolf") {
-      aliveWolves++;
-    } else if (GOD_ROLE_NAMES.some((n) => role.name.toLowerCase() === n)) {
-      aliveGods++;
-    } else {
-      aliveVillagers++;
-    }
+    if (role.team === "werewolf") aliveWolves++;
+    else if (GOD_ROLE_NAMES.some((n) => role.name.toLowerCase() === n)) aliveGods++;
+    else aliveVillagers++;
   }
 
   if (aliveWolves === 0) return "villager";
@@ -67,22 +52,14 @@ async function checkWinCondition(
   return null;
 }
 
-/**
- * Check if a player index is a Hunter role (and not poisoned this night).
- */
-async function isHunterPlayer(
-  playerIdx: number,
-  roomId: number
-): Promise<boolean> {
+async function isHunterPlayer(playerIdx: number, roomId: number): Promise<boolean> {
   const room = await prisma.rooms.findUnique({ where: { id: roomId } });
   if (!room) return false;
-
   let playersData: Array<{ role: number | null }> = [];
   try {
     const parsed = JSON.parse(room.players as unknown as string);
     playersData = Array.isArray(parsed?.players) ? parsed.players : Array.isArray(parsed) ? parsed : [];
   } catch { return false; }
-
   const roleId = playersData[playerIdx]?.role;
   if (!roleId) return false;
   const role = await prisma.roles.findUnique({ where: { id: roleId } });
@@ -90,10 +67,24 @@ async function isHunterPlayer(
   return role.name.toLowerCase() === "hunter" || role.name === "猎人";
 }
 
+/**
+ * After deaths occur, check if sheriff is among the newly dead.
+ * If so, route to pass_badge and store the intended next phase.
+ */
+function shouldPassBadge(
+  sheriffId: number | null,
+  newlyDead: Set<number> | number[],
+  badgeDestroyed: boolean
+): boolean {
+  if (sheriffId === null || badgeDestroyed) return false;
+  const deadSet = newlyDead instanceof Set ? newlyDead : new Set(newlyDead);
+  return deadSet.has(sheriffId);
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { sessionId, hunterTarget } = body;
+    const { sessionId, hunterTarget, badgeTarget } = body;
 
     if (!sessionId) {
       return NextResponse.json({ success: false, message: "Session ID is required" }, { status: 400 });
@@ -107,6 +98,7 @@ export async function POST(request: NextRequest) {
     let nextPhase: GamePhase = session.phase;
     let nextDay = session.dayNumber;
     let winner: string | null = null;
+    const extraUpdate: Record<string, unknown> = {};
 
     let alive = parseJsonArray(session.alivePlayers as unknown);
     let dead = parseJsonArray(session.deadPlayers as unknown);
@@ -132,28 +124,19 @@ export async function POST(request: NextRequest) {
           }
         });
 
-        // Resolve wolf kill vs guard vs witch heal with 同守同救 logic
         let wolfKillSaved = false;
         if (wolfTarget !== null && guardTarget !== null && guardTarget === wolfTarget) {
           wolfKillSaved = true;
         }
         if (wolfTarget !== null && healTarget !== null && healTarget === wolfTarget) {
-          if (wolfKillSaved) {
-            wolfKillSaved = false; // 同守同救 → dies!
-          } else {
-            wolfKillSaved = true;
-          }
+          if (wolfKillSaved) wolfKillSaved = false; // 同守同救 → dies
+          else wolfKillSaved = true;
         }
 
         const playersToDie = new Set<number>();
-        if (wolfTarget !== null && !wolfKillSaved) {
-          playersToDie.add(wolfTarget);
-        }
-        if (poisonTarget !== null) {
-          playersToDie.add(poisonTarget);
-        }
+        if (wolfTarget !== null && !wolfKillSaved) playersToDie.add(wolfTarget);
+        if (poisonTarget !== null) playersToDie.add(poisonTarget);
 
-        // Apply deaths
         playersToDie.forEach((pid) => {
           if (alive.includes(pid)) {
             alive = alive.filter((p) => p !== pid);
@@ -161,33 +144,45 @@ export async function POST(request: NextRequest) {
           }
         });
 
-        // Update witch/guard state
-        const updateData: Record<string, unknown> = {
+        Object.assign(extraUpdate, {
           alivePlayers: JSON.stringify(alive),
           deadPlayers: JSON.stringify(dead),
           nightActions: JSON.stringify({}),
           guardLastTarget: guardTarget,
-        };
-        if (healTarget !== null) updateData.witchHealUsed = true;
-        if (poisonTarget !== null) updateData.witchPoisonUsed = true;
+        });
+        if (healTarget !== null) extraUpdate.witchHealUsed = true;
+        if (poisonTarget !== null) extraUpdate.witchPoisonUsed = true;
 
-        await prisma.gameSession.update({ where: { id: sessionId }, data: updateData });
+        await prisma.gameSession.update({ where: { id: sessionId }, data: extraUpdate });
 
-        // Check if a hunter died (not by poison) → route to hunter_shoot
         let hunterShoots = false;
         for (const pid of playersToDie) {
           const isHunter = await isHunterPlayer(pid, session.roomId);
           if (isHunter) {
             const wasPoisoned = poisonTarget === pid && (wolfTarget !== pid || wolfKillSaved);
-            if (!wasPoisoned) {
-              hunterShoots = true;
-            }
+            if (!wasPoisoned) hunterShoots = true;
           }
         }
 
-        // Win condition check
         winner = await checkWinCondition(alive, session.roomId);
-        nextPhase = winner ? "ended" : hunterShoots ? "hunter_shoot" : "day";
+        if (winner) {
+          nextPhase = "ended";
+        } else if (hunterShoots) {
+          nextPhase = "hunter_shoot";
+        } else if (shouldPassBadge(session.sheriffId, playersToDie, session.sheriffBadgeDestroyed)) {
+          // Sheriff died at night — route to pass_badge first
+          const intendedPhase = session.dayNumber === 0 ? "election" : "day";
+          extraUpdate.pendingPhase = intendedPhase;
+          nextPhase = "pass_badge";
+        } else if (session.dayNumber === 0) {
+          // First night → election
+          nextPhase = "election";
+          extraUpdate.electionState = "SIGNUP";
+          extraUpdate.sheriffCandidates = JSON.stringify([]);
+          extraUpdate.electionVotes = JSON.stringify({});
+        } else {
+          nextPhase = "day";
+        }
         break;
       }
 
@@ -197,13 +192,16 @@ export async function POST(request: NextRequest) {
         break;
       }
 
-      // ─── VOTING RESOLUTION ────────────────────────────────────
+      // ─── VOTING RESOLUTION (with 1.5x sheriff weight) ─────────
       case "voting": {
         const votes = parseJsonObject<Record<string, number>>(session.votes as unknown, {});
 
         const tally = new Map<number, number>();
-        Object.values(votes).forEach((target) => {
-          if (typeof target === "number") tally.set(target, (tally.get(target) || 0) + 1);
+        Object.entries(votes).forEach(([voterId, target]) => {
+          if (typeof target === "number") {
+            const weight = Number(voterId) === session.sheriffId ? 1.5 : 1;
+            tally.set(target, (tally.get(target) || 0) + weight);
+          }
         });
 
         let eliminated: number | null = null;
@@ -214,9 +212,11 @@ export async function POST(request: NextRequest) {
           if (!isTie && topCount > 0) eliminated = topTarget;
         }
 
+        const votingDead = new Set<number>();
         if (eliminated !== null && alive.includes(eliminated)) {
           alive = alive.filter((p) => p !== eliminated);
           dead = Array.from(new Set([...dead, eliminated]));
+          votingDead.add(eliminated);
         }
 
         await prisma.gameSession.update({
@@ -228,7 +228,6 @@ export async function POST(request: NextRequest) {
           },
         });
 
-        // Check if eliminated player is a hunter → route to hunter_shoot
         let hunterShoots = false;
         if (eliminated !== null) {
           hunterShoots = await isHunterPlayer(eliminated, session.roomId);
@@ -239,6 +238,9 @@ export async function POST(request: NextRequest) {
           nextPhase = "ended";
         } else if (hunterShoots) {
           nextPhase = "hunter_shoot";
+        } else if (shouldPassBadge(session.sheriffId, votingDead, session.sheriffBadgeDestroyed)) {
+          extraUpdate.pendingPhase = "night";
+          nextPhase = "pass_badge";
         } else {
           nextPhase = "night";
           nextDay += 1;
@@ -249,9 +251,11 @@ export async function POST(request: NextRequest) {
       // ─── HUNTER SHOOT RESOLUTION ──────────────────────────────
       case "hunter_shoot": {
         const targetIdx = typeof hunterTarget === "number" ? hunterTarget : null;
+        const hunterDead = new Set<number>();
         if (targetIdx !== null && alive.includes(targetIdx)) {
           alive = alive.filter((p) => p !== targetIdx);
           dead = Array.from(new Set([...dead, targetIdx]));
+          hunterDead.add(targetIdx);
 
           await prisma.gameSession.update({
             where: { id: sessionId },
@@ -263,48 +267,160 @@ export async function POST(request: NextRequest) {
         }
 
         winner = await checkWinCondition(alive, session.roomId);
-        // After hunter shoots, go to day if coming from night, or night if coming from voting
-        // We use dayNumber: if we haven't incremented yet this cycle, we're post-night → day
-        // Simple heuristic: if session was already in a day cycle, go to night; otherwise day
-        // Since hunter_shoot always follows night or voting resolution, we determine by checking
-        // if the session's phase before was night or voting.
-        // The safest approach: check if there are nightActions cleared (means we came from night)
-        // For simplicity, always go to day first — the hunter dying at night → day, dying at vote → night
-        // Actually, we need to track the origin. Let's use a simple rule:
-        // If dayNumber was already incremented (voting does nextDay+1 before hunter), it means voting.
-        // But we don't increment before hunter_shoot. So: if votes are empty (cleared by voting), came from voting.
-        const votesStr = parseJsonObject(session.votes as unknown, {});
-        const cameFromVoting = Object.keys(votesStr).length === 0 &&
-          parseJsonObject(session.nightActions as unknown, null) === null ||
-          Object.keys(parseJsonObject<Record<string, unknown>>(session.nightActions as unknown, {})).length === 0;
-
-        // Simpler: night→hunter_shoot→day; voting→hunter_shoot→night+nextDay
-        // We check if nightActions were just cleared (came from night) by seeing if the phase before had nightActions
-        // Best approach: if there was a vote elimination this round, we came from voting
-        // Since voting clears votes to {}, and night clears nightActions to {},
-        // we'll just default: after hunter shoot → day (keep current day number, the day phase handles discussion)
-        // If we came from voting, we need to go to next night
-        // Since voting already set nextDay but that happens before hunter_shoot...
-        // Actually, the vote resolution sets nextPhase=hunter_shoot (not night) so nextDay was NOT incremented.
-        // So we need to increment here if coming from voting.
-
-        // To distinguish: store origin in nightActions as a marker before entering hunter_shoot
-        // For now: use a pragmatic approach — check dead list changes
-        // The simplest reliable approach: the "day" phase hasn't changed since night resolution sets it
-        // Let's just look at session.dayNumber vs nextDay
-        // Actually, this function doesn't re-read the session after updates.
-        // Let's keep it simple: after night→hunter_shoot→day (no day increment)
-        // after voting→hunter_shoot→night (day increment)
-        // We can tell by checking if the nightActions field is empty (night clears it) AND votes empty (voting clears it)
-        // Both are cleared. But night sets guardLastTarget. If guardLastTarget was just updated, we came from night.
-        // Simplest: just always go to day. The hunter dying from vote → player sees a brief day then voting again.
-        // This is actually standard: after any death announcement, there's a day discussion.
-
         if (winner) {
           nextPhase = "ended";
+        } else if (shouldPassBadge(session.sheriffId, hunterDead, session.sheriffBadgeDestroyed)) {
+          extraUpdate.pendingPhase = "day";
+          nextPhase = "pass_badge";
         } else {
           nextPhase = "day";
         }
+        break;
+      }
+
+      // ─── ELECTION SUB-PHASE TRANSITIONS ───────────────────────
+      case "election": {
+        const candidates = parseJsonArray(session.sheriffCandidates as unknown);
+        const electionVotes = parseJsonObject<Record<string, number>>(session.electionVotes as unknown, {});
+
+        switch (session.electionState) {
+          case "SIGNUP": {
+            if (candidates.length === 0) {
+              // Nobody signed up → no sheriff, go to day
+              extraUpdate.sheriffBadgeDestroyed = true;
+              nextPhase = "day";
+            } else if (candidates.length === 1) {
+              // Auto-elect the single candidate
+              extraUpdate.sheriffId = candidates[0];
+              extraUpdate.electionState = null;
+              nextPhase = "day";
+            } else {
+              extraUpdate.electionState = "SPEAKING";
+              nextPhase = "election";
+            }
+            break;
+          }
+
+          case "SPEAKING": {
+            // After speaking phase, check remaining candidates (withdrawals already applied via election API)
+            if (candidates.length === 0) {
+              extraUpdate.sheriffBadgeDestroyed = true;
+              extraUpdate.electionState = null;
+              nextPhase = "day";
+            } else if (candidates.length === 1) {
+              extraUpdate.sheriffId = candidates[0];
+              extraUpdate.electionState = null;
+              nextPhase = "day";
+            } else {
+              extraUpdate.electionState = "VOTING";
+              extraUpdate.electionVotes = JSON.stringify({});
+              nextPhase = "election";
+            }
+            break;
+          }
+
+          case "VOTING": {
+            // Tally election votes
+            const tally = new Map<number, number>();
+            Object.values(electionVotes).forEach((target) => {
+              if (typeof target === "number") {
+                tally.set(target, (tally.get(target) || 0) + 1);
+              }
+            });
+
+            if (tally.size === 0) {
+              extraUpdate.sheriffBadgeDestroyed = true;
+              extraUpdate.electionState = null;
+              nextPhase = "day";
+              break;
+            }
+
+            const entries = Array.from(tally.entries()).sort((a, b) => b[1] - a[1]);
+            const topCount = entries[0][1];
+            const tied = entries.filter(([, count]) => count === topCount);
+
+            if (tied.length === 1) {
+              extraUpdate.sheriffId = tied[0][0];
+              extraUpdate.electionState = null;
+              nextPhase = "day";
+            } else {
+              // Tie → PK between tied candidates
+              extraUpdate.electionState = "PK";
+              extraUpdate.sheriffCandidates = JSON.stringify(tied.map(([id]) => id));
+              extraUpdate.electionVotes = JSON.stringify({});
+              nextPhase = "election";
+            }
+            break;
+          }
+
+          case "PK": {
+            const tally = new Map<number, number>();
+            Object.values(electionVotes).forEach((target) => {
+              if (typeof target === "number") {
+                tally.set(target, (tally.get(target) || 0) + 1);
+              }
+            });
+
+            if (tally.size === 0) {
+              // No votes cast in PK → badge lost
+              extraUpdate.sheriffBadgeDestroyed = true;
+              extraUpdate.electionState = null;
+              nextPhase = "day";
+              break;
+            }
+
+            const entries = Array.from(tally.entries()).sort((a, b) => b[1] - a[1]);
+            const topCount = entries[0][1];
+            const tied = entries.filter(([, count]) => count === topCount);
+
+            if (tied.length === 1) {
+              extraUpdate.sheriffId = tied[0][0];
+            } else {
+              // Still tied → badge lost
+              extraUpdate.sheriffBadgeDestroyed = true;
+            }
+            extraUpdate.electionState = null;
+            nextPhase = "day";
+            break;
+          }
+
+          default:
+            nextPhase = "day";
+            break;
+        }
+        break;
+      }
+
+      // ─── PASS BADGE RESOLUTION ────────────────────────────────
+      case "pass_badge": {
+        const target = badgeTarget !== undefined ? badgeTarget : null;
+        if (target !== null && alive.includes(target)) {
+          extraUpdate.sheriffId = target;
+        } else {
+          extraUpdate.sheriffId = null;
+          extraUpdate.sheriffBadgeDestroyed = true;
+        }
+
+        // Resume to the phase that was deferred
+        const pending = session.pendingPhase as string | null;
+        extraUpdate.pendingPhase = null;
+
+        if (pending === "night") {
+          nextPhase = "night";
+          nextDay += 1;
+        } else if (pending === "election") {
+          nextPhase = "election";
+          extraUpdate.electionState = "SIGNUP";
+          extraUpdate.sheriffCandidates = JSON.stringify([]);
+          extraUpdate.electionVotes = JSON.stringify({});
+        } else if (pending === "day") {
+          nextPhase = "day";
+        } else {
+          nextPhase = "day";
+        }
+
+        winner = await checkWinCondition(alive, session.roomId);
+        if (winner) nextPhase = "ended";
         break;
       }
 
@@ -317,6 +433,7 @@ export async function POST(request: NextRequest) {
       data: {
         phase: nextPhase,
         dayNumber: nextDay,
+        ...extraUpdate,
       },
     });
 

@@ -20,7 +20,16 @@ export enum GamePhaseEnum {
   DAY = "day",
   VOTING = "voting",
   HUNTER_SHOOT = "hunter_shoot",
+  ELECTION = "election",
+  PASS_BADGE = "pass_badge",
   ENDED = "ended",
+}
+
+export enum ElectionStateEnum {
+  SIGNUP = "SIGNUP",
+  SPEAKING = "SPEAKING",
+  VOTING = "VOTING",
+  PK = "PK",
 }
 
 export enum TeamEnum {

@@ -14,9 +14,10 @@ import RolePanel from "@/components/game/RolePanel";
 import GameLog from "@/components/game/GameLog";
 import { getApiService } from "@/services/apiService";
 import { socketService } from "@/services/socketService";
-import { GamePhaseEnum, LocalStorageKeyEnum, RouteEnum } from "@/lib/enums";
+import { GamePhaseEnum, ElectionStateEnum, LocalStorageKeyEnum, RouteEnum } from "@/lib/enums";
 import type { ApiResponse, CharacterType, GameSessionType, PlayerType, RoomType } from "@/lib/types";
-import { getBotNightAction, getBotVoteTarget, getBotGuardTarget, getBotHunterShootTarget, isBotPlayer, randomDelay } from "@/lib/botLogic";
+import { getBotNightAction, getBotVoteTarget, getBotGuardTarget, getBotHunterShootTarget, getBotElectionSignup, getBotElectionVote, isBotPlayer, randomDelay } from "@/lib/botLogic";
+import ElectionPhaseActions from "@/components/game/ElectionPhaseActions";
 
 export default function GamePage() {
   const router = useRouter();
@@ -66,10 +67,13 @@ export default function GamePage() {
   const isGuard = role ? (role.name.toLowerCase() === "guard" || role.name === "守卫") : false;
   const isHunter = role ? (role.name.toLowerCase() === "hunter" || role.name === "猎人") : false;
 
+  const isSheriff = session?.sheriffId === me;
+
   // Simultaneous night actions: any role with a night ability can act immediately
   const hasNightAction = isWerewolf || isSeer || isWitch || isGuard;
   const canAct = phase === GamePhaseEnum.NIGHT && isAlive && !submitted && hasNightAction;
   const canVote = phase === GamePhaseEnum.VOTING && isAlive && !submitted;
+  const canBlowUp = isWerewolf && isAlive && (phase === GamePhaseEnum.DAY || phase === GamePhaseEnum.ELECTION);
 
   // Werewolf player indices
   const werewolves = useMemo(() => {
@@ -99,6 +103,8 @@ export default function GamePage() {
     if (phase === GamePhaseEnum.DAY) return "Day Phase";
     if (phase === GamePhaseEnum.VOTING) return "Voting Phase";
     if (phase === GamePhaseEnum.HUNTER_SHOOT) return "Hunter Shoot";
+    if (phase === GamePhaseEnum.ELECTION) return "Sheriff Election";
+    if (phase === GamePhaseEnum.PASS_BADGE) return "Badge Transfer";
     return "Game";
   }, [phase, winner]);
 
@@ -186,6 +192,10 @@ export default function GamePage() {
               setTimeout(() => runBotVotes(), 1200);
             } else if (data.phase === GamePhaseEnum.HUNTER_SHOOT) {
               setTimeout(() => runBotHunterShoot(), 1200);
+            } else if (data.phase === GamePhaseEnum.ELECTION) {
+              setTimeout(() => runBotElectionActions(), 1200);
+            } else if (data.phase === GamePhaseEnum.PASS_BADGE) {
+              setTimeout(() => runBotPassBadge(), 1200);
             }
           }
         });
@@ -208,6 +218,15 @@ export default function GamePage() {
     });
     socketService.onVoteSubmitted(() => {
       addLog(`A player has voted`);
+    });
+    socketService.onPlayerBlewUp((...args) => {
+      const data = args[0] as { playerId: number };
+      addLog(`Player ${data.playerId + 1} self-destructed!`);
+      toast.error(`Player ${data.playerId + 1} self-destructed! 💥`, { autoClose: 3000 });
+      if (roomCode) fetchState(roomCode);
+    });
+    socketService.onElectionUpdate(() => {
+      if (roomCode) fetchState(roomCode);
     });
     socketService.onWolfSelection((...args) => {
       const data = args[0] as { playerId: number; targetId: number | null };
@@ -380,6 +399,119 @@ export default function GamePage() {
     socketService.emitChatMessage(room.roomCode, me, chatInput, playerName);
     setChatInput("");
   }, [room, chatInput, players, me]);
+
+  // ── Blow-Up (Self-Destruct) ─────────────────────────────────
+  const blowUp = async () => {
+    if (!session || !room || !canBlowUp) return;
+    const confirmed = window.confirm("确定要自爆吗？你将立即死亡，游戏跳过白天直接进入黑夜！");
+    if (!confirmed) return;
+    try {
+      const api = getApiService();
+      const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null; blowUpPlayerId: number }> =
+        await api.post("/api/game/blow-up", { sessionId: session.id, playerId: me });
+      if (res.success && res.data) {
+        socketService.emitPlayerBlewUp(room.roomCode, me);
+        toast.error("你自爆了！💥", { autoClose: 3000 });
+        // Apply phase transition locally (socket won't echo back to sender)
+        // We'll call applyPhaseTransition after it's defined below, but since it's a useCallback,
+        // we can just inline the same logic:
+        socketService.emitPhaseChanged(room.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
+        setPhase(res.data.phase as GamePhaseEnum);
+        setDay(res.data.dayNumber);
+        setSubmitted(false);
+        setTarget(null);
+        setChatMessages([]);
+        setWolfSelections({});
+        setRevealedTarget(null);
+        addLog(`Phase → ${res.data.phase} (Day ${res.data.dayNumber})`);
+        fetchState(room.roomCode);
+        if (res.data.winner) {
+          setWinner(res.data.winner);
+          socketService.emitGameEnded(room.roomCode, res.data.winner);
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Blow-up failed";
+      toast.error(msg);
+    }
+  };
+
+  // ── Election Actions ──────────────────────────────────────
+  const submitElectionAction = async (action: string, targetId?: number) => {
+    if (!session || !room) return;
+    try {
+      const api = getApiService();
+      const res: ApiResponse<{ allSignedUp?: boolean; allVoted?: boolean; candidates?: number[] }> =
+        await api.post("/api/game/election", {
+          sessionId: session.id,
+          playerId: me,
+          action,
+          targetId: targetId ?? null,
+        });
+      if (!res.success) throw new Error(res.message || "Failed");
+      setSubmitted(true);
+      socketService.emitElectionUpdate(room.roomCode);
+      fetchState(room.roomCode);
+
+      // If all signed up or all voted, advance the election phase
+      if (res.data?.allSignedUp || res.data?.allVoted) {
+        setTimeout(async () => {
+          try {
+            const localApi = getApiService();
+            const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+              await localApi.post("/api/game/phase", { sessionId: session.id });
+            if (phaseRes.success && phaseRes.data) {
+              socketService.emitPhaseChanged(room.roomCode, phaseRes.data.phase as GamePhaseEnum, phaseRes.data.dayNumber);
+              setPhase(phaseRes.data.phase as GamePhaseEnum);
+              setDay(phaseRes.data.dayNumber);
+              setSubmitted(false);
+              setTarget(null);
+              addLog(`Phase → ${phaseRes.data.phase} (Day ${phaseRes.data.dayNumber})`);
+              fetchState(room.roomCode);
+              if (phaseRes.data.winner) {
+                setWinner(phaseRes.data.winner);
+                socketService.emitGameEnded(room.roomCode, phaseRes.data.winner);
+              }
+            }
+          } catch (err) { console.error("Election phase advance failed", err); }
+        }, 1000);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Election action failed";
+      toast.error(msg);
+    }
+  };
+
+  // ── Pass Badge ────────────────────────────────────────────
+  const submitPassBadge = async (badgeTargetId: number | null) => {
+    if (!session || !room) return;
+    try {
+      const api = getApiService();
+      const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+        await api.post("/api/game/phase", {
+          sessionId: session.id,
+          badgeTarget: badgeTargetId,
+        });
+      if (res.success && res.data) {
+        socketService.emitPhaseChanged(room.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
+        setPhase(res.data.phase as GamePhaseEnum);
+        setDay(res.data.dayNumber);
+        setSubmitted(false);
+        setTarget(null);
+        setChatMessages([]);
+        setWolfSelections({});
+        setRevealedTarget(null);
+        addLog(`Phase → ${res.data.phase} (Day ${res.data.dayNumber})`);
+        fetchState(room.roomCode);
+        if (res.data.winner) {
+          setWinner(res.data.winner);
+          socketService.emitGameEnded(room.roomCode, res.data.winner);
+        }
+      }
+    } catch (e) {
+      console.error("Pass badge failed", e);
+    }
+  };
 
   // Shared helper: apply a phase transition result to local state AND broadcast to others.
   // Needed because Socket.IO broadcast does NOT echo back to the sender, so the sender
@@ -585,6 +717,121 @@ export default function GamePage() {
     botActingRef.current = false;
   }, [isTestMode, addLog, applyPhaseTransition]);
 
+  const runBotElectionActions = useCallback(async () => {
+    if (!isTestMode) return;
+    if (botActingRef.current) return;
+    botActingRef.current = true;
+
+    const s = sessionRef.current;
+    const r = roomRef.current;
+    const p = playersRef.current;
+    if (!s || !r) { botActingRef.current = false; return; }
+
+    setBotsActing(true);
+    const api = getApiService();
+    const botIndices = s.alivePlayers.filter((i) => isBotPlayer(p[i]?.name ?? null));
+
+    if (s.electionState === "SIGNUP") {
+      addLog("[Test Mode] Bots deciding on sheriff election signup...");
+      for (const botIdx of botIndices) {
+        const shouldSignup = getBotElectionSignup();
+        await randomDelay();
+        try {
+          await api.post("/api/game/election", {
+            sessionId: s.id, playerId: botIdx,
+            action: shouldSignup ? "signup" : "opt_out",
+          });
+          socketService.emitElectionUpdate(r.roomCode);
+        } catch (e) { console.error(`Bot ${botIdx} election signup failed`, e); }
+      }
+      // After all bots sign up, check if we need to advance
+      await randomDelay(500, 1000);
+      try {
+        const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+          await api.post("/api/game/phase", { sessionId: s.id });
+        if (res.success && res.data) {
+          applyPhaseTransition(r.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
+        }
+      } catch (e) { console.error("Bot election phase advance failed", e); }
+    } else if (s.electionState === "SPEAKING") {
+      addLog("[Test Mode] Bots skipping speaking phase...");
+      // Bots don't withdraw; advance after delay
+      await randomDelay(500, 1000);
+      try {
+        const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+          await api.post("/api/game/phase", { sessionId: s.id });
+        if (res.success && res.data) {
+          applyPhaseTransition(r.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
+        }
+      } catch (e) { console.error("Bot election speaking advance failed", e); }
+    } else if (s.electionState === "VOTING" || s.electionState === "PK") {
+      addLog("[Test Mode] Bots voting in sheriff election...");
+      const candidates = s.sheriffCandidates;
+      const voters = botIndices.filter((i) => !candidates.includes(i));
+      for (const botIdx of voters) {
+        const voteTarget = getBotElectionVote(candidates);
+        if (voteTarget === null) continue;
+        await randomDelay();
+        try {
+          await api.post("/api/game/election", {
+            sessionId: s.id, playerId: botIdx,
+            action: "election_vote", targetId: voteTarget,
+          });
+          socketService.emitElectionUpdate(r.roomCode);
+        } catch (e) { console.error(`Bot ${botIdx} election vote failed`, e); }
+      }
+      await randomDelay(500, 1000);
+      try {
+        const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+          await api.post("/api/game/phase", { sessionId: s.id });
+        if (res.success && res.data) {
+          applyPhaseTransition(r.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
+        }
+      } catch (e) { console.error("Bot election vote advance failed", e); }
+    }
+
+    setBotsActing(false);
+    botActingRef.current = false;
+  }, [isTestMode, addLog, applyPhaseTransition]);
+
+  const runBotPassBadge = useCallback(async () => {
+    if (!isTestMode) return;
+    if (botActingRef.current) return;
+    botActingRef.current = true;
+
+    const s = sessionRef.current;
+    const r = roomRef.current;
+    const p = playersRef.current;
+    if (!s || !r) { botActingRef.current = false; return; }
+
+    // Only act if the dead sheriff is a bot
+    if (s.sheriffId === null || !isBotPlayer(p[s.sheriffId]?.name ?? null)) {
+      botActingRef.current = false;
+      return;
+    }
+
+    setBotsActing(true);
+    addLog("[Test Mode] Bot sheriff transferring badge...");
+    await randomDelay(500, 1200);
+
+    // Bot randomly picks an alive player to transfer to (50%) or destroys (50%)
+    const transferTarget = Math.random() > 0.5 && s.alivePlayers.length > 0
+      ? s.alivePlayers[Math.floor(Math.random() * s.alivePlayers.length)]
+      : null;
+
+    const api = getApiService();
+    try {
+      const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+        await api.post("/api/game/phase", { sessionId: s.id, badgeTarget: transferTarget });
+      if (res.success && res.data) {
+        applyPhaseTransition(r.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
+      }
+    } catch (e) { console.error("Bot pass badge failed", e); }
+
+    setBotsActing(false);
+    botActingRef.current = false;
+  }, [isTestMode, addLog, applyPhaseTransition]);
+
   const leaveGame = () => {
     if (room) socketService.leaveRoom(room.roomCode);
     localStorage.removeItem(LocalStorageKeyEnum.ROOM_CODE);
@@ -604,7 +851,13 @@ export default function GamePage() {
   }
 
   const alive = (idx: number) => session.alivePlayers.includes(idx);
-  const canSelect = phase === GamePhaseEnum.HUNTER_SHOOT ? (isHunter && !isAlive) : (canAct || canVote);
+  const canElectionVote = phase === GamePhaseEnum.ELECTION &&
+    (session.electionState === ElectionStateEnum.VOTING || session.electionState === ElectionStateEnum.PK) &&
+    isAlive && !submitted && !session.sheriffCandidates.includes(me);
+  const canPassBadge = phase === GamePhaseEnum.PASS_BADGE && isSheriff;
+  const canSelect = phase === GamePhaseEnum.HUNTER_SHOOT
+    ? (isHunter && !isAlive)
+    : (canAct || canVote || canElectionVote || canPassBadge);
   const selectable = (idx: number) => canSelect && alive(idx) && idx !== me && !submitted;
 
   return (
@@ -674,6 +927,8 @@ export default function GamePage() {
                       actualCharacter={actualCharacter}
                       showActualRole={showActualRole || shouldRevealWolf}
                       onSelect={() => selectable(idx) && !isGuardBlocked && setTarget(idx)}
+                      isSheriff={session.sheriffId === idx}
+                      isCandidate={session.sheriffCandidates.includes(idx)}
                     />
                     {selectedTarget && idx !== me && (
                       <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-red-600 text-white text-xs px-2 py-1 rounded-full whitespace-nowrap">
@@ -811,16 +1066,94 @@ export default function GamePage() {
                 return <p className="text-orange-100/80 text-sm">Waiting for night actions...</p>;
               }
 
+              // ── ELECTION PHASE ──
+              if (phase === GamePhaseEnum.ELECTION) {
+                return (
+                  <div className="space-y-3">
+                    {canBlowUp && (
+                      <button
+                        className="w-full px-4 py-3 text-sm rounded-lg bg-red-800 hover:bg-red-700 text-white font-bold border-2 border-red-500 animate-pulse"
+                        onClick={blowUp}
+                      >
+                        💥 立即自爆
+                      </button>
+                    )}
+                    <ElectionPhaseActions
+                      electionState={session.electionState}
+                      submitted={submitted}
+                      candidates={session.sheriffCandidates}
+                      players={players}
+                      currentPlayerId={me}
+                      target={target}
+                      chatMessages={chatMessages}
+                      chatInput={chatInput}
+                      onSignup={() => submitElectionAction("signup")}
+                      onOptOut={() => submitElectionAction("opt_out")}
+                      onWithdraw={() => submitElectionAction("withdraw")}
+                      onVote={() => target !== null && submitElectionAction("election_vote", target)}
+                      onChatInputChange={setChatInput}
+                      onSendChat={sendChat}
+                    />
+                  </div>
+                );
+              }
+
+              // ── PASS BADGE PHASE ──
+              if (phase === GamePhaseEnum.PASS_BADGE) {
+                if (isSheriff) {
+                  return (
+                    <div className="space-y-3">
+                      <div className="p-4 bg-amber-900/30 rounded-lg border border-amber-500/30">
+                        <h3 className="text-amber-200 font-semibold mb-2">🌟 移交警徽</h3>
+                        <p className="text-amber-100/80 text-sm">
+                          你已死亡。请选择将警徽移交给一名存活玩家，或撕毁警徽。
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          className="flex-1 px-4 py-3 text-sm rounded-lg bg-amber-700 hover:bg-amber-600 text-white font-semibold disabled:opacity-50"
+                          onClick={() => submitPassBadge(target)}
+                          disabled={target === null}
+                        >
+                          移交给 {target !== null ? (players[target]?.name || `Player ${target + 1}`) : "..."}
+                        </button>
+                        <button
+                          className="flex-1 px-4 py-3 text-sm rounded-lg bg-gray-600 hover:bg-gray-500 text-white font-semibold"
+                          onClick={() => submitPassBadge(null)}
+                        >
+                          撕毁警徽
+                        </button>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="p-4 bg-amber-900/30 rounded-lg border border-amber-500/30">
+                    <p className="text-amber-200 text-sm">🌟 等待警长移交警徽...</p>
+                  </div>
+                );
+              }
+
               // ── DAY PHASE ──
               if (phase === GamePhaseEnum.DAY) {
                 return (
-                  <DayPhaseActions
-                    chatMessages={chatMessages}
-                    chatInput={chatInput}
-                    currentPlayerId={me}
-                    onChatInputChange={setChatInput}
-                    onSendChat={sendChat}
-                  />
+                  <div className="space-y-3">
+                    {canBlowUp && (
+                      <button
+                        className="w-full px-4 py-3 text-sm rounded-lg bg-red-800 hover:bg-red-700 text-white font-bold border-2 border-red-500 animate-pulse"
+                        onClick={blowUp}
+                      >
+                        💥 立即自爆
+                      </button>
+                    )}
+                    <DayPhaseActions
+                      chatMessages={chatMessages}
+                      chatInput={chatInput}
+                      currentPlayerId={me}
+                      onChatInputChange={setChatInput}
+                      onSendChat={sendChat}
+                    />
+                  </div>
                 );
               }
 

@@ -20,6 +20,8 @@ enum GamePhase {
   day
   voting
   hunter_shoot
+  election
+  pass_badge
   ended
 }
 
@@ -61,6 +63,12 @@ model GameSession {
   witchHealUsed       Boolean   @default(false)
   witchPoisonUsed     Boolean   @default(false)
   guardLastTarget     Int?
+  sheriffId           Int?
+  electionState       String?
+  sheriffCandidates   String    @default("[]")
+  electionVotes       String    @default("{}")
+  sheriffBadgeDestroyed Boolean @default(false)
+  pendingPhase        String?
   gameLog             GameLog[]
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
