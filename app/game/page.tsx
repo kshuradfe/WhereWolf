@@ -270,7 +270,8 @@ export default function GamePage() {
       socketService.emitActionSubmitted(room.roomCode, me);
       toast.success("Action submitted");
 
-      if (res.data?.allActionsComplete) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (res.data?.allActionsComplete || (res as any).allActionsComplete) {
         const isAdmin = players[me]?.isAdmin;
         if (isAdmin) {
           setTimeout(() => advancePhase(), 2000);
@@ -309,7 +310,8 @@ export default function GamePage() {
       setSubmitted(true);
       socketService.emitActionSubmitted(room.roomCode, me);
 
-      if (res.data?.allActionsComplete) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (res.data?.allActionsComplete || (res as any).allActionsComplete) {
         const isAdmin = players[me]?.isAdmin;
         if (isAdmin) {
           setTimeout(() => advancePhase(), 2000);
@@ -451,7 +453,8 @@ export default function GamePage() {
     let allComplete = false;
 
     const handleBotActionResult = (res: ApiResponse<{ allActionsComplete?: boolean; roomCode?: string }>, botIdx: number) => {
-      if (res.data?.allActionsComplete) allComplete = true;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if (res.data?.allActionsComplete || (res as any).allActionsComplete) allComplete = true;
       socketService.emitActionSubmitted(r.roomCode, botIdx);
     };
 

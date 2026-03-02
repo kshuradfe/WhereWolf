@@ -88,12 +88,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         message: "Action recorded",
-        allActionsComplete: allActed,
-        roomCode: room.roomCode,
+        data: {
+          allActionsComplete: allActed,
+          roomCode: room.roomCode,
+        },
       });
     }
 
-    return NextResponse.json({ success: true, message: "Action recorded" });
+    return NextResponse.json({ success: true, message: "Action recorded", data: {} });
   } catch (error) {
     console.error("Error recording action:", error);
     return NextResponse.json({ success: false, message: "Failed to record action" }, { status: 500 });
