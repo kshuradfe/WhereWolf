@@ -171,11 +171,11 @@ export async function POST(request: NextRequest) {
           nextPhase = "hunter_shoot";
         } else if (shouldPassBadge(session.sheriffId, playersToDie, session.sheriffBadgeDestroyed)) {
           // Sheriff died at night — route to pass_badge first
-          const intendedPhase = session.dayNumber === 0 ? "election" : "day";
+          const intendedPhase = session.dayNumber === 1 ? "election" : "day";
           extraUpdate.pendingPhase = intendedPhase;
           nextPhase = "pass_badge";
-        } else if (session.dayNumber === 0) {
-          // First night → election
+        } else if (session.dayNumber === 1) {
+          // First night (Day 1) → election
           nextPhase = "election";
           extraUpdate.electionState = "SIGNUP";
           extraUpdate.sheriffCandidates = JSON.stringify([]);

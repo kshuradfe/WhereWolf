@@ -17,10 +17,10 @@ export enum LocalStorageKeyEnum {
 export enum GamePhaseEnum {
   WAITING = "waiting",
   NIGHT = "night",
+  ELECTION = "election",
   DAY = "day",
   VOTING = "voting",
   HUNTER_SHOOT = "hunter_shoot",
-  ELECTION = "election",
   PASS_BADGE = "pass_badge",
   ENDED = "ended",
 }
