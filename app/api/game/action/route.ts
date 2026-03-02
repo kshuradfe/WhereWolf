@@ -65,13 +65,14 @@ export async function POST(request: NextRequest) {
       const roles = await prisma.roles.findMany();
       const roleMap = new Map(roles.map((r) => [r.id, r]));
 
-      // Players who need to act: wolves (team=werewolf) + any role with priority > 0
+      const NIGHT_ROLE_NAMES = ["seer", "witch", "guard", "预言家", "女巫", "守卫"];
       const rolesWithActions = alivePlayers.filter((pIdx) => {
         const roleId = playersData[pIdx]?.role;
         if (!roleId) return false;
         const role = roleMap.get(roleId);
         if (!role) return false;
-        return role.team === "werewolf" || role.priority > 0;
+        return role.team === "werewolf" || role.priority > 0 ||
+          NIGHT_ROLE_NAMES.includes(role.name.toLowerCase()) || NIGHT_ROLE_NAMES.includes(role.name);
       });
 
       const actedPlayers = Object.keys(nightActions).map(Number);

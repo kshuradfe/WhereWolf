@@ -82,13 +82,16 @@ export default function GamePage() {
 
   const wolfConsensus = useMemo(() => {
     if (!isWerewolf || werewolves.length === 0) return true;
+    // Only require human wolves to agree; bots act independently via runBotNightActions
+    const humanWolves = werewolves.filter((idx) => !isBotPlayer(players[idx]?.name ?? null));
+    if (humanWolves.length === 0) return true;
     const selections = Object.entries(wolfSelections)
-      .filter(([playerId]) => werewolves.includes(Number(playerId)))
+      .filter(([playerId]) => humanWolves.includes(Number(playerId)))
       .map(([, targetId]) => targetId);
-    if (selections.length < werewolves.length) return false;
+    if (selections.length < humanWolves.length) return false;
     const firstTarget = selections[0];
     return selections.every((t) => t === firstTarget) && firstTarget !== null;
-  }, [isWerewolf, werewolves, wolfSelections]);
+  }, [isWerewolf, werewolves, wolfSelections, players]);
 
   const phaseLabel = useMemo(() => {
     if (winner) return "Game Over";
@@ -200,6 +203,8 @@ export default function GamePage() {
     });
     socketService.onActionSubmitted(() => {
       addLog(`A player submitted their night action`);
+      // Re-fetch so witch can see the latest nightActions (wolf_kill target)
+      if (roomCode) fetchState(roomCode);
     });
     socketService.onVoteSubmitted(() => {
       addLog(`A player has voted`);
@@ -269,6 +274,21 @@ export default function GamePage() {
         const isAdmin = players[me]?.isAdmin;
         if (isAdmin) {
           setTimeout(() => advancePhase(), 2000);
+        } else if (isTestMode) {
+          setTimeout(async () => {
+            try {
+              const localApi = getApiService();
+              const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+                await localApi.post("/api/game/phase", { sessionId: session.id });
+              if (phaseRes.success && phaseRes.data && room) {
+                socketService.emitPhaseChanged(room.roomCode, phaseRes.data.phase as GamePhaseEnum, phaseRes.data.dayNumber);
+                if (phaseRes.data.winner) {
+                  setWinner(phaseRes.data.winner);
+                  socketService.emitGameEnded(room.roomCode, phaseRes.data.winner);
+                }
+              }
+            } catch (err) { console.error("Phase advance after action failed", err); }
+          }, 2000);
         } else {
           addLog("All night actions complete. Waiting for phase transition...");
         }
@@ -283,7 +303,7 @@ export default function GamePage() {
     if (!session || !room) return;
     try {
       const api = getApiService();
-      const res: ApiResponse = await api.post("/api/game/action", {
+      const res: ApiResponse<{ allActionsComplete?: boolean }> = await api.post("/api/game/action", {
         sessionId: session.id,
         playerId: me,
         action: "skip",
@@ -292,6 +312,27 @@ export default function GamePage() {
       if (!res.success) throw new Error(res.message || "Failed");
       setSubmitted(true);
       socketService.emitActionSubmitted(room.roomCode, me);
+
+      if (res.data?.allActionsComplete) {
+        const isAdmin = players[me]?.isAdmin;
+        if (isAdmin) {
+          setTimeout(() => advancePhase(), 2000);
+        } else if (isTestMode) {
+          setTimeout(async () => {
+            try {
+              const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+                await api.post("/api/game/phase", { sessionId: session.id });
+              if (phaseRes.success && phaseRes.data) {
+                socketService.emitPhaseChanged(room.roomCode, phaseRes.data.phase as GamePhaseEnum, phaseRes.data.dayNumber);
+                if (phaseRes.data.winner) {
+                  setWinner(phaseRes.data.winner);
+                  socketService.emitGameEnded(room.roomCode, phaseRes.data.winner);
+                }
+              }
+            } catch (err) { console.error("Phase advance after skip failed", err); }
+          }, 2000);
+        }
+      }
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : "Skip failed";
       toast.error(errorMessage);
@@ -398,6 +439,12 @@ export default function GamePage() {
     }
 
     let wolfVictimId: number | null = null;
+    let allComplete = false;
+
+    const handleBotActionResult = (res: ApiResponse<{ allActionsComplete?: boolean; roomCode?: string }>, botIdx: number) => {
+      if (res.data?.allActionsComplete) allComplete = true;
+      socketService.emitActionSubmitted(r.roomCode, botIdx);
+    };
 
     for (const botIdx of otherBots) {
       const botRole = chars.find((c) => c.id === p[botIdx]?.role);
@@ -408,8 +455,8 @@ export default function GamePage() {
         const guardTarget = getBotGuardTarget(botIdx, s.alivePlayers, s.guardLastTarget);
         await randomDelay();
         try {
-          await api.post("/api/game/action", { sessionId: s.id, playerId: botIdx, action: "guard", targetId: guardTarget });
-          socketService.emitActionSubmitted(r.roomCode, botIdx);
+          const res: ApiResponse<{ allActionsComplete?: boolean }> = await api.post("/api/game/action", { sessionId: s.id, playerId: botIdx, action: "guard", targetId: guardTarget });
+          handleBotActionResult(res, botIdx);
         } catch (e) { console.error(`Bot ${botIdx} guard failed`, e); }
         continue;
       }
@@ -418,8 +465,8 @@ export default function GamePage() {
       if (action === "wolf_kill" && targetId !== null) wolfVictimId = targetId;
       await randomDelay();
       try {
-        await api.post("/api/game/action", { sessionId: s.id, playerId: botIdx, action, targetId });
-        socketService.emitActionSubmitted(r.roomCode, botIdx);
+        const res: ApiResponse<{ allActionsComplete?: boolean }> = await api.post("/api/game/action", { sessionId: s.id, playerId: botIdx, action, targetId });
+        handleBotActionResult(res, botIdx);
       } catch (e) { console.error(`Bot ${botIdx} night action failed`, e); }
     }
 
@@ -430,26 +477,30 @@ export default function GamePage() {
       const { action, targetId } = getBotNightAction(botIdx, botRole, s.alivePlayers, p, chars, wolfVictimId, s.witchHealUsed, s.witchPoisonUsed);
       await randomDelay();
       try {
-        await api.post("/api/game/action", { sessionId: s.id, playerId: botIdx, action, targetId });
-        socketService.emitActionSubmitted(r.roomCode, botIdx);
+        const res: ApiResponse<{ allActionsComplete?: boolean }> = await api.post("/api/game/action", { sessionId: s.id, playerId: botIdx, action, targetId });
+        handleBotActionResult(res, botIdx);
       } catch (e) { console.error(`Bot ${botIdx} (witch) night action failed`, e); }
     }
 
     setBotsActing(false);
-    addLog("[Test Mode] Bots finished night actions. Advancing phase...");
-    await new Promise((resolve) => setTimeout(resolve, 800));
 
-    try {
-      const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
-        await api.post("/api/game/phase", { sessionId: s.id });
-      if (res.success && res.data) {
-        socketService.emitPhaseChanged(r.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
-        if (res.data.winner) {
-          setWinner(res.data.winner);
-          socketService.emitGameEnded(r.roomCode, res.data.winner);
+    if (allComplete) {
+      addLog("[Test Mode] All night actions complete. Advancing phase...");
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      try {
+        const res: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
+          await api.post("/api/game/phase", { sessionId: s.id });
+        if (res.success && res.data) {
+          socketService.emitPhaseChanged(r.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
+          if (res.data.winner) {
+            setWinner(res.data.winner);
+            socketService.emitGameEnded(r.roomCode, res.data.winner);
+          }
         }
-      }
-    } catch (e) { console.error("Bot advance phase failed", e); }
+      } catch (e) { console.error("Bot advance phase failed", e); }
+    } else {
+      addLog("[Test Mode] Bots finished. Waiting for human players...");
+    }
 
     botActingRef.current = false;
   }, [isTestMode, addLog]);
