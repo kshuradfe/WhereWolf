@@ -98,6 +98,10 @@ export async function POST(request: NextRequest) {
       votes: JSON.stringify({}),
       nightActions: JSON.stringify({}),
       dayNumber: nextDay,
+      // 清空麦序，防止进入黑夜后仍有幽灵麦
+      currentSpeakerId: null,
+      speakerQueue: JSON.stringify([]),
+      speakerStartTime: null,
     };
 
     // If blowing up during election, destroy the sheriff badge

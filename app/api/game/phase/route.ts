@@ -184,7 +184,8 @@ export async function POST(request: NextRequest) {
         for (const pid of playersToDie) {
           const isHunter = await isHunterPlayer(pid, session.roomId);
           if (isHunter) {
-            const wasPoisoned = poisonTarget === pid && (wolfTarget !== pid || wolfKillSaved);
+            // 只要猎人被毒了（无论是否同时被刀），枪管必定被堵死
+            const wasPoisoned = poisonTarget === pid;
             if (!wasPoisoned) hunterShoots = true;
           }
         }
@@ -192,15 +193,26 @@ export async function POST(request: NextRequest) {
         winner = await checkWinCondition(alive, session.roomId);
         if (winner) {
           nextPhase = "ended";
-        } else if (hunterShoots) {
-          nextPhase = "hunter_shoot";
         } else if (shouldPassBadge(session.sheriffId, playersToDie, session.sheriffBadgeDestroyed)) {
-          // Sheriff died at night — route to pass_badge first
-          const intendedPhase = session.dayNumber === 1 ? "election" : "day";
+          // 警长死亡时优先移交警徽，把原本该去的阶段存入 pendingPhase
+          // 这样警徽移交后能正确衔接猎人开枪或竞选，而不会丢失任何阶段
+          let intendedPhase = "day";
+          if (hunterShoots) intendedPhase = "hunter_shoot";
+          else if (session.dayNumber === 1) intendedPhase = "election";
+
           extraUpdate.pendingPhase = intendedPhase;
           nextPhase = "pass_badge";
+          // 如果 pendingPhase 是 election，提前初始化竞选状态
+          if (intendedPhase === "election") {
+            extraUpdate.electionState = "SIGNUP";
+            extraUpdate.sheriffCandidates = JSON.stringify([]);
+            extraUpdate.electionVotes = JSON.stringify({});
+          }
+          Object.assign(extraUpdate, clearSpeakerQueue());
+        } else if (hunterShoots) {
+          nextPhase = "hunter_shoot";
+          Object.assign(extraUpdate, clearSpeakerQueue());
         } else if (session.dayNumber === 1) {
-          // First night (Day 1) → election
           nextPhase = "election";
           extraUpdate.electionState = "SIGNUP";
           extraUpdate.sheriffCandidates = JSON.stringify([]);
@@ -264,11 +276,13 @@ export async function POST(request: NextRequest) {
         winner = await checkWinCondition(alive, session.roomId);
         if (winner) {
           nextPhase = "ended";
+        } else if (shouldPassBadge(session.sheriffId, votingDead, session.sheriffBadgeDestroyed)) {
+          // 警长被投票出局时，优先移交警徽，再执行猎人开枪或进入天黑
+          extraUpdate.pendingPhase = hunterShoots ? "hunter_shoot" : "night";
+          nextPhase = "pass_badge";
+          if (!hunterShoots) nextDay += 1;
         } else if (hunterShoots) {
           nextPhase = "hunter_shoot";
-        } else if (shouldPassBadge(session.sheriffId, votingDead, session.sheriffBadgeDestroyed)) {
-          extraUpdate.pendingPhase = "night";
-          nextPhase = "pass_badge";
         } else {
           nextPhase = "night";
           nextDay += 1;
@@ -299,6 +313,7 @@ export async function POST(request: NextRequest) {
         if (winner) {
           nextPhase = "ended";
         } else if (shouldPassBadge(session.sheriffId, hunterDead, session.sheriffBadgeDestroyed)) {
+          // 猎人开枪带走了警长，先移交警徽再进白天
           extraUpdate.pendingPhase = "day";
           nextPhase = "pass_badge";
         } else {

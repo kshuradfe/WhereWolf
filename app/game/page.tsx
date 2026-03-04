@@ -57,6 +57,11 @@ export default function GamePage() {
   const allCharactersRef = useRef<CharacterType[]>([]);
   const botActingRef = useRef(false);
   const runBotEndTurnRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const runBotNightActionsRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const runBotVotesRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const runBotHunterShootRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const runBotElectionActionsRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const runBotPassBadgeRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { roomRef.current = room; }, [room]);
@@ -442,23 +447,7 @@ export default function GamePage() {
       if (res.success && res.data) {
         socketService.emitPlayerBlewUp(room.roomCode, me);
         toast.error("你自爆了！💥", { autoClose: 3000 });
-        // Apply phase transition locally (socket won't echo back to sender)
-        // We'll call applyPhaseTransition after it's defined below, but since it's a useCallback,
-        // we can just inline the same logic:
-        socketService.emitPhaseChanged(room.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
-        setPhase(res.data.phase as GamePhaseEnum);
-        setDay(res.data.dayNumber);
-        setSubmitted(false);
-        setTarget(null);
-        setChatMessages([]);
-        setWolfSelections({});
-        setRevealedTarget(null);
-        addLog(`Phase → ${res.data.phase} (Day ${res.data.dayNumber})`);
-        fetchState(room.roomCode);
-        if (res.data.winner) {
-          setWinner(res.data.winner);
-          socketService.emitGameEnded(room.roomCode, res.data.winner);
-        }
+        applyPhaseTransition(room.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Blow-up failed";
@@ -491,17 +480,7 @@ export default function GamePage() {
             const phaseRes: ApiResponse<{ phase: string; dayNumber: number; winner: string | null }> =
               await localApi.post("/api/game/phase", { sessionId: session.id });
             if (phaseRes.success && phaseRes.data) {
-              socketService.emitPhaseChanged(room.roomCode, phaseRes.data.phase as GamePhaseEnum, phaseRes.data.dayNumber);
-              setPhase(phaseRes.data.phase as GamePhaseEnum);
-              setDay(phaseRes.data.dayNumber);
-              setSubmitted(false);
-              setTarget(null);
-              addLog(`Phase → ${phaseRes.data.phase} (Day ${phaseRes.data.dayNumber})`);
-              fetchState(room.roomCode);
-              if (phaseRes.data.winner) {
-                setWinner(phaseRes.data.winner);
-                socketService.emitGameEnded(room.roomCode, phaseRes.data.winner);
-              }
+              applyPhaseTransition(room.roomCode, phaseRes.data.phase, phaseRes.data.dayNumber, phaseRes.data.winner);
             }
           } catch (err) { console.error("Election phase advance failed", err); }
         }, 1000);
@@ -523,20 +502,7 @@ export default function GamePage() {
           badgeTarget: badgeTargetId,
         });
       if (res.success && res.data) {
-        socketService.emitPhaseChanged(room.roomCode, res.data.phase as GamePhaseEnum, res.data.dayNumber);
-        setPhase(res.data.phase as GamePhaseEnum);
-        setDay(res.data.dayNumber);
-        setSubmitted(false);
-        setTarget(null);
-        setChatMessages([]);
-        setWolfSelections({});
-        setRevealedTarget(null);
-        addLog(`Phase → ${res.data.phase} (Day ${res.data.dayNumber})`);
-        fetchState(room.roomCode);
-        if (res.data.winner) {
-          setWinner(res.data.winner);
-          socketService.emitGameEnded(room.roomCode, res.data.winner);
-        }
+        applyPhaseTransition(room.roomCode, res.data.phase, res.data.dayNumber, res.data.winner);
       }
     } catch (e) {
       console.error("Pass badge failed", e);
@@ -562,10 +528,16 @@ export default function GamePage() {
     setRevealedTarget(null);
     addLog(`Phase → ${newPhase} (Day ${newDay})`);
     fetchState(roomCode).then(() => {
-      // 测试模式：进入 DAY/ELECTION 顺麦阶段时，直接触发 Bot 过麦（不依赖 Socket）
-      if (localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true" &&
-          (newPhase === GamePhaseEnum.DAY || newPhase === GamePhaseEnum.ELECTION)) {
-        setTimeout(() => runBotEndTurnRef.current(), 400);
+      if (localStorage.getItem(LocalStorageKeyEnum.TEST_MODE) === "true") {
+        if (newPhase === GamePhaseEnum.NIGHT)         setTimeout(() => runBotNightActionsRef.current(), 1200);
+        else if (newPhase === GamePhaseEnum.VOTING)   setTimeout(() => runBotVotesRef.current(), 1200);
+        else if (newPhase === GamePhaseEnum.HUNTER_SHOOT) setTimeout(() => runBotHunterShootRef.current(), 1200);
+        else if (newPhase === GamePhaseEnum.ELECTION) setTimeout(() => runBotElectionActionsRef.current(), 1200);
+        else if (newPhase === GamePhaseEnum.PASS_BADGE) setTimeout(() => runBotPassBadgeRef.current(), 1200);
+
+        if (newPhase === GamePhaseEnum.DAY || newPhase === GamePhaseEnum.ELECTION) {
+          setTimeout(() => runBotEndTurnRef.current(), 2000);
+        }
       }
     });
     if (newWinner) {
@@ -979,7 +951,12 @@ export default function GamePage() {
 
   useEffect(() => {
     runBotEndTurnRef.current = runBotEndTurn;
-  }, [runBotEndTurn]);
+    runBotNightActionsRef.current = runBotNightActions;
+    runBotVotesRef.current = runBotVotes;
+    runBotHunterShootRef.current = runBotHunterShoot;
+    runBotElectionActionsRef.current = runBotElectionActions;
+    runBotPassBadgeRef.current = runBotPassBadge;
+  }, [runBotEndTurn, runBotNightActions, runBotVotes, runBotHunterShoot, runBotElectionActions, runBotPassBadge]);
 
   const leaveGame = () => {
     if (room) socketService.leaveRoom(room.roomCode);
