@@ -194,15 +194,18 @@ export async function POST(request: NextRequest) {
         if (winner) {
           nextPhase = "ended";
         } else if (shouldPassBadge(session.sheriffId, playersToDie, session.sheriffBadgeDestroyed)) {
-          // 警长死亡时优先移交警徽，把原本该去的阶段存入 pendingPhase
-          // 这样警徽移交后能正确衔接猎人开枪或竞选，而不会丢失任何阶段
-          let intendedPhase = "day";
-          if (hunterShoots) intendedPhase = "hunter_shoot";
-          else if (session.dayNumber === 1) intendedPhase = "election";
-
+          // 警长死亡优先移交警徽。
+          // 用 "hunter_shoot:<after>" 编码告诉后续阶段：先开枪，开完再去 <after>。
+          let intendedPhase: string;
+          if (hunterShoots) {
+            intendedPhase = session.dayNumber === 1 ? "hunter_shoot:election" : "hunter_shoot:day";
+          } else if (session.dayNumber === 1) {
+            intendedPhase = "election";
+          } else {
+            intendedPhase = "day";
+          }
           extraUpdate.pendingPhase = intendedPhase;
           nextPhase = "pass_badge";
-          // 如果 pendingPhase 是 election，提前初始化竞选状态
           if (intendedPhase === "election") {
             extraUpdate.electionState = "SIGNUP";
             extraUpdate.sheriffCandidates = JSON.stringify([]);
@@ -211,6 +214,8 @@ export async function POST(request: NextRequest) {
           Object.assign(extraUpdate, clearSpeakerQueue());
         } else if (hunterShoots) {
           nextPhase = "hunter_shoot";
+          // 告诉猎人阶段，开完枪后该去哪
+          extraUpdate.pendingPhase = session.dayNumber === 1 ? "election" : "day";
           Object.assign(extraUpdate, clearSpeakerQueue());
         } else if (session.dayNumber === 1) {
           nextPhase = "election";
@@ -277,12 +282,14 @@ export async function POST(request: NextRequest) {
         if (winner) {
           nextPhase = "ended";
         } else if (shouldPassBadge(session.sheriffId, votingDead, session.sheriffBadgeDestroyed)) {
-          // 警长被投票出局时，优先移交警徽，再执行猎人开枪或进入天黑
-          extraUpdate.pendingPhase = hunterShoots ? "hunter_shoot" : "night";
+          // 警长被票出，优先移交警徽；用编码记住后续路径
+          extraUpdate.pendingPhase = hunterShoots ? "hunter_shoot:night" : "night";
           nextPhase = "pass_badge";
           if (!hunterShoots) nextDay += 1;
         } else if (hunterShoots) {
           nextPhase = "hunter_shoot";
+          // 关键修复：开完枪必须天黑，而不是天亮
+          extraUpdate.pendingPhase = "night";
         } else {
           nextPhase = "night";
           nextDay += 1;
@@ -309,16 +316,33 @@ export async function POST(request: NextRequest) {
           });
         }
 
+        const huntPending = session.pendingPhase as string | null;
         winner = await checkWinCondition(alive, session.roomId);
+
         if (winner) {
           nextPhase = "ended";
         } else if (shouldPassBadge(session.sheriffId, hunterDead, session.sheriffBadgeDestroyed)) {
-          // 猎人开枪带走了警长，先移交警徽再进白天
-          extraUpdate.pendingPhase = "day";
+          // 开枪带走警长，先移交警徽；把原定目的地传下去
+          extraUpdate.pendingPhase = huntPending || "day";
           nextPhase = "pass_badge";
         } else {
-          nextPhase = "day";
-          Object.assign(extraUpdate, initSpeakerQueue(alive));
+          // 读取上游存入的目的地
+          if (huntPending === "night") {
+            nextPhase = "night";
+            nextDay += 1;
+            Object.assign(extraUpdate, clearSpeakerQueue());
+          } else if (huntPending === "election") {
+            nextPhase = "election";
+            extraUpdate.electionState = "SIGNUP";
+            extraUpdate.sheriffCandidates = JSON.stringify([]);
+            extraUpdate.electionVotes = JSON.stringify({});
+            Object.assign(extraUpdate, clearSpeakerQueue());
+          } else {
+            // 默认（包括 "day" 或无记录）
+            nextPhase = "day";
+            Object.assign(extraUpdate, initSpeakerQueue(alive));
+          }
+          extraUpdate.pendingPhase = null;
         }
         break;
       }
@@ -467,10 +491,13 @@ export async function POST(request: NextRequest) {
           extraUpdate.sheriffCandidates = JSON.stringify([]);
           extraUpdate.electionVotes = JSON.stringify({});
           Object.assign(extraUpdate, clearSpeakerQueue());
-        } else if (pending === "day") {
-          nextPhase = "day";
-          Object.assign(extraUpdate, initSpeakerQueue(alive));
+        } else if (pending && pending.startsWith("hunter_shoot")) {
+          // 格式 "hunter_shoot:<after>"：先去猎人开枪，再去 <after>
+          nextPhase = "hunter_shoot";
+          extraUpdate.pendingPhase = pending.split(":")[1] || "day";
+          Object.assign(extraUpdate, clearSpeakerQueue());
         } else {
+          // "day" 或无记录，进白天
           nextPhase = "day";
           Object.assign(extraUpdate, initSpeakerQueue(alive));
         }
