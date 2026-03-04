@@ -38,41 +38,58 @@ export default function GameHeader({
   const showSpeakerTimer = hasSpeaker && (phase === GamePhaseEnum.DAY || phase === GamePhaseEnum.ELECTION);
 
   return (
-    <header className="bg-slate-900/80 backdrop-blur-sm border-b border-orange-500/30 p-4">
-      <div className="flex justify-between items-center">
-        <div className="flex items-center gap-4">
-          <h1 className="text-3xl font-bold text-orange-50">{phaseLabel}</h1>
-          <span className="text-xl text-orange-200">Day {day}</span>
+    <div className="bg-slate-900/60 backdrop-blur-xl rounded-2xl border border-white/10 p-2.5 mb-1 shrink-0">
+      {/* Top row: phase + day + leave */}
+      <div className="flex items-center justify-between gap-1">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <h1 className="text-sm font-bold text-white/90 truncate leading-tight">{phaseLabel}</h1>
+          <span className="text-xs text-white/50 shrink-0">· D{day}</span>
           {!isAlive && (
-            <span className="px-3 py-1 bg-red-600/80 rounded-full text-white font-semibold">Eliminated</span>
-          )}
-          {hasSpeaker && speakerName && (
-            <div className="flex items-center gap-2 px-3 py-1 bg-amber-800/60 rounded-full border border-amber-500/40">
-              <span className="text-amber-200 text-sm">🎤</span>
-              <span className="text-amber-100 text-sm font-semibold">{speakerName}</span>
-            </div>
+            <span className="px-1.5 py-px bg-red-600/70 rounded-full text-white text-[9px] font-semibold shrink-0">
+              出局
+            </span>
           )}
         </div>
-        <div className="flex items-center gap-4">
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Timer */}
           {showSpeakerTimer && onSpeakerTimerEnd ? (
             <SpeakerTimer
               speakerStartTime={speakerStartTime ?? null}
               speakDuration={speakDuration}
               onTimeEnd={onSpeakerTimerEnd}
-              className="w-20 h-20"
+              className="w-9 h-9"
+              compact
             />
           ) : phase !== GamePhaseEnum.NIGHT ? (
-            <Timer initialTime={timerLimit} key={`${phase}-${day}`} onTimeEnd={onTimerEnd} className="w-24 h-24" />
+            <Timer
+              initialTime={timerLimit}
+              key={`${phase}-${day}`}
+              onTimeEnd={onTimerEnd}
+              className="w-9 h-9"
+              compact
+            />
           ) : null}
+
+          {/* Leave game — compact danger icon button */}
           <button
             type="button"
             onClick={onLeaveGame}
-            className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+            title="Leave Game"
+            className="w-8 h-8 flex items-center justify-center rounded-xl text-base bg-gradient-to-b from-red-500 to-red-700 shadow-[0_3px_0_rgb(153,27,27)] active:shadow-none active:translate-y-0.5 transition-all"
           >
-            Leave Game
+            🚪
           </button>
         </div>
       </div>
-    </header>
+
+      {/* Speaker chip */}
+      {hasSpeaker && speakerName && (
+        <div className="mt-1.5 flex items-center gap-1.5 px-2 py-1 bg-amber-900/40 border border-amber-500/20 rounded-full w-fit max-w-full">
+          <span className="text-amber-300 text-xs">🎤</span>
+          <span className="text-amber-100/90 text-[11px] font-semibold truncate">{speakerName}</span>
+        </div>
+      )}
+    </div>
   );
 }

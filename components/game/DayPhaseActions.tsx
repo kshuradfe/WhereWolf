@@ -25,26 +25,24 @@ export default function DayPhaseActions({
   onSendChat,
 }: DayPhaseActionsProps) {
   return (
-    <div className="space-y-3">
-      <div className="p-4 bg-blue-900/30 rounded-lg border border-blue-500/30">
-        <h3 className="text-blue-200 font-semibold mb-2">Day Phase</h3>
-        <p className="text-blue-100/80 text-sm">Discuss with other players. Share information and suspicions.</p>
+    <div className="space-y-2">
+      <div className="p-2.5 bg-blue-900/30 rounded-xl border border-blue-500/20">
+        <p className="text-blue-200 text-xs font-semibold mb-0.5">☀️ 白天讨论</p>
+        <p className="text-blue-100/65 text-[11px]">分享信息，交流怀疑。</p>
       </div>
 
       {/* Chat Messages */}
-      <div className="bg-slate-800/60 rounded-lg p-3 h-64 overflow-y-auto space-y-2">
+      <div className="bg-slate-800/50 rounded-xl p-2 h-36 overflow-y-auto space-y-1.5 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
         {chatMessages.length === 0 ? (
-          <p className="text-gray-400 text-sm text-center">No messages yet. Start the discussion!</p>
+          <p className="text-white/25 text-[10px] text-center pt-4">暂无消息，开始讨论吧！</p>
         ) : (
           chatMessages.map((msg) => (
             <div
               key={msg.id}
-              className={`p-2 rounded ${
-                msg.playerId === currentPlayerId ? "bg-blue-900/40 ml-4" : "bg-slate-700/40 mr-4"
-              }`}
+              className={`p-1.5 rounded-lg ${msg.playerId === currentPlayerId ? "bg-blue-900/40 ml-3" : "bg-slate-700/40 mr-3"}`}
             >
-              <p className="text-orange-300 text-xs font-semibold">{msg.playerName}</p>
-              <p className="text-orange-50 text-sm">{msg.message}</p>
+              <p className="text-amber-300/90 text-[10px] font-semibold">{msg.playerName}</p>
+              <p className="text-white/80 text-[11px]">{msg.message}</p>
             </div>
           ))
         )}
@@ -54,20 +52,15 @@ export default function DayPhaseActions({
       <div className="flex gap-2">
         <Input
           type="text"
-          placeholder="Type your message..."
+          placeholder="发言..."
           value={chatInput}
           onChange={(e) => onChatInputChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              onSendChat();
-            }
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSendChat(); }
           }}
-          className="flex-1 text-white bg-slate-800/60 border-b-2 border-b-orange-500"
+          className="flex-1 text-white bg-slate-800/60 border-b border-b-blue-500/50 text-xs"
         />
-        <Button className="px-6 py-2 text-sm" onClick={onSendChat}>
-          Send
-        </Button>
+        <Button className="px-3 py-1.5 text-[10px]" onClick={onSendChat}>发送</Button>
       </div>
     </div>
   );

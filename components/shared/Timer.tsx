@@ -6,9 +6,10 @@ interface TimerProps {
   initialTime: number;
   onTimeEnd?: () => void;
   className?: string;
+  compact?: boolean;
 }
 
-export default function Timer({ initialTime, onTimeEnd, className = "" }: TimerProps) {
+export default function Timer({ initialTime, onTimeEnd, className = "", compact = false }: TimerProps) {
   const [timeLeft, setTimeLeft] = useState(initialTime);
 
   useEffect(() => {
@@ -56,7 +57,7 @@ export default function Timer({ initialTime, onTimeEnd, className = "" }: TimerP
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className={`text-4xl font-bold ${colorClass}`}>
+        <span className={`font-bold ${colorClass} ${compact ? "text-[10px] leading-none" : "text-4xl"}`}>
           {minutes}:{seconds.toString().padStart(2, "0")}
         </span>
       </div>

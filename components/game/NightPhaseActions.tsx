@@ -34,16 +34,16 @@ export default function NightPhaseActions({
 }: NightPhaseActionsProps) {
   if (submitted) {
     return (
-      <div className="p-4 bg-green-900/30 rounded-lg border border-green-500/30">
-        <p className="text-green-200 text-sm">✓ Action submitted. Waiting for other players...</p>
+      <div className="p-2.5 bg-green-900/30 rounded-xl border border-green-500/20">
+        <p className="text-green-300 text-xs">✓ 已提交，等待其他玩家...</p>
       </div>
     );
   }
 
   if (!canAct) {
     return (
-      <div className="p-4 bg-gray-900/30 rounded-lg border border-gray-500/30">
-        <p className="text-gray-300 text-sm">Your role has no night action. Rest while others act...</p>
+      <div className="p-2.5 bg-slate-800/40 rounded-xl border border-white/10">
+        <p className="text-white/50 text-xs">你的角色无需夜晚行动，等待其他人...</p>
       </div>
     );
   }
@@ -52,81 +52,67 @@ export default function NightPhaseActions({
   const isWitch = lowerName === "witch" || roleName === "女巫";
   const isGuard = lowerName === "guard" || roleName === "守卫";
 
-  // ── Witch UI ──
+  // ── Witch ──
   if (isWitch) {
     return (
-      <div className="space-y-3">
-        <div className="p-4 bg-purple-900/30 rounded-lg border border-purple-500/30">
-          <h3 className="text-purple-200 font-semibold mb-2">Night Phase — 女巫</h3>
+      <div className="space-y-2">
+        <div className="p-2.5 bg-purple-900/30 rounded-xl border border-purple-500/20">
+          <p className="text-purple-200 text-xs font-semibold mb-1">🌙 女巫 — 夜晚行动</p>
           {!witchHealUsed && wolfTargetName ? (
-            <p className="text-red-300 text-sm mb-2">
-              🐺 狼人今晚袭击了：<span className="font-bold">{wolfTargetName}</span>
-            </p>
+            <p className="text-red-300 text-[11px] mb-1">🐺 狼人今晚袭击了：<span className="font-bold">{wolfTargetName}</span></p>
           ) : witchHealUsed ? (
-            <p className="text-gray-400 text-sm mb-2">💊 解药已用完，无法得知狼人目标。</p>
+            <p className="text-white/40 text-[11px] mb-1">💊 解药已用完。</p>
           ) : (
-            <p className="text-gray-300 text-sm mb-2">🐺 狼人还未行动，请等待...</p>
+            <p className="text-white/40 text-[11px] mb-1">🐺 狼人还未行动，请等待...</p>
           )}
-          {witchPoisonUsed && (
-            <p className="text-gray-400 text-sm mb-1">🧪 毒药已用完。</p>
-          )}
-          <p className="text-purple-100/80 text-sm">
-            {target !== null
-              ? '已选择毒药目标。点击「使用毒药」确认。'
-              : '你可以使用解药救人，或选择一名玩家使用毒药。'}
+          {witchPoisonUsed && <p className="text-white/40 text-[11px]">🧪 毒药已用完。</p>}
+          <p className="text-purple-100/70 text-[11px]">
+            {target !== null ? "已选择毒药目标，点击「使用毒药」确认。" : "可使用解药救人，或选择玩家使用毒药。"}
           </p>
         </div>
-
         <div className="flex gap-2">
           <Button
-            className="flex-1 px-4 py-3 text-sm !bg-green-700 hover:!bg-green-600"
+            className="flex-1 px-3 py-2 text-xs !bg-green-700 hover:!bg-green-600"
             onClick={() => onSubmitAction("heal")}
             disabled={witchHealUsed || !wolfTargetName || submitDisabled}
           >
-            💊 使用解药
+            💊 解药
           </Button>
           <Button
-            className="flex-1 px-4 py-3 text-sm !bg-red-700 hover:!bg-red-600"
+            className="flex-1 px-3 py-2 text-xs !bg-red-700 hover:!bg-red-600"
             onClick={() => onSubmitAction("poison")}
             disabled={witchPoisonUsed || target === null || submitDisabled}
           >
-            🧪 使用毒药
+            🧪 毒药
           </Button>
         </div>
-        <Button
-          className="w-full px-4 py-3 text-sm !bg-gray-600 hover:!bg-gray-500"
-          onClick={onSkipAction}
-        >
-          什么都不做（跳过）
+        <Button className="w-full px-3 py-2 text-xs !bg-gray-600 hover:!bg-gray-500" onClick={onSkipAction}>
+          跳过（什么都不做）
         </Button>
       </div>
     );
   }
 
-  // ── Guard UI ──
+  // ── Guard ──
   if (isGuard) {
     return (
-      <div className="space-y-3">
-        <div className="p-4 bg-blue-900/30 rounded-lg border border-blue-500/30">
-          <h3 className="text-blue-200 font-semibold mb-2">Night Phase — 守卫</h3>
-          <p className="text-blue-100/80 text-sm">
-            选择一名玩家进行守护。被守护的玩家今晚不会被狼人杀死。
-          </p>
+      <div className="space-y-2">
+        <div className="p-2.5 bg-blue-900/30 rounded-xl border border-blue-500/20">
+          <p className="text-blue-200 text-xs font-semibold mb-1">🌙 守卫 — 夜晚行动</p>
+          <p className="text-blue-100/75 text-[11px]">选择一名玩家进行守护，被守护者今晚不会被杀。</p>
           {guardLastTarget !== null && guardLastTarget !== undefined && (
-            <p className="text-yellow-300 text-xs mt-1">
-              ⚠️ 你昨晚守护的玩家今晚不能再守。
-            </p>
+            <p className="text-yellow-300/80 text-[10px] mt-1">⚠️ 不能连续两晚守同一人。</p>
           )}
         </div>
         <div className="flex gap-2">
           <Button
-            className="flex-1 px-4 py-3 text-sm"
+            className="flex-1 px-3 py-2 text-xs"
             onClick={() => onSubmitAction("guard")}
             disabled={target === null || submitDisabled}
           >
             🛡️ 守护
           </Button>
-          <Button className="flex-1 px-4 py-3 text-sm !bg-gray-600 hover:!bg-gray-500" onClick={onSkipAction}>
+          <Button className="flex-1 px-3 py-2 text-xs !bg-gray-600 hover:!bg-gray-500" onClick={onSkipAction}>
             跳过
           </Button>
         </div>
@@ -134,29 +120,26 @@ export default function NightPhaseActions({
     );
   }
 
-  // ── Default UI (Wolves, Seer, etc.) ──
+  // ── Default (Wolves, Seer, etc.) ──
   return (
-    <div className="space-y-3">
-      <div className="p-4 bg-purple-900/30 rounded-lg border border-purple-500/30">
-        <h3 className="text-purple-200 font-semibold mb-2">Night Phase</h3>
-        <p className="text-purple-100/80 text-sm">
-          {target !== null
-            ? "Target selected. Click submit to confirm your action."
-            : "Select a player to target with your night action."}
+    <div className="space-y-2">
+      <div className="p-2.5 bg-purple-900/30 rounded-xl border border-purple-500/20">
+        <p className="text-purple-200 text-xs font-semibold mb-1">🌙 夜晚行动</p>
+        <p className="text-purple-100/70 text-[11px]">
+          {target !== null ? "已选择目标，点击提交确认。" : "选择一名玩家作为目标。"}
         </p>
-        {hint && <p className="text-purple-300 text-xs mt-1">{hint}</p>}
+        {hint && <p className="text-purple-300/80 text-[10px] mt-1">{hint}</p>}
       </div>
-
       <div className="flex gap-2">
         <Button
-          className="flex-1 px-4 py-3 text-sm"
+          className="flex-1 px-3 py-2 text-xs"
           onClick={() => onSubmitAction("target")}
           disabled={target === null || submitDisabled}
         >
-          Submit Action
+          提交行动
         </Button>
-        <Button className="flex-1 px-4 py-3 text-sm !bg-gray-600 hover:!bg-gray-500" onClick={onSkipAction}>
-          Skip
+        <Button className="flex-1 px-3 py-2 text-xs !bg-gray-600 hover:!bg-gray-500" onClick={onSkipAction}>
+          跳过
         </Button>
       </div>
     </div>

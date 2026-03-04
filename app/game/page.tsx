@@ -10,7 +10,6 @@ import NightPhaseActions from "@/components/game/NightPhaseActions";
 import GameStatistics from "@/components/game/GameStatistics";
 import PlayerCard from "@/components/game/PlayerCard";
 import GameHeader from "@/components/game/GameHeader";
-import RolePanel from "@/components/game/RolePanel";
 import GameLog from "@/components/game/GameLog";
 import { getApiService } from "@/services/apiService";
 import { socketService } from "@/services/socketService";
@@ -981,410 +980,392 @@ export default function GamePage() {
     (session.electionState === ElectionStateEnum.VOTING || session.electionState === ElectionStateEnum.PK) &&
     isAlive && !submitted &&
     (session.electionState === ElectionStateEnum.PK
-      ? !session.sheriffCandidates.includes(me)          // PK：非PK候选人均可投
-      : !session.initialCandidates.includes(me));          // 第一轮：仅初始警下可投
+      ? !session.sheriffCandidates.includes(me)
+      : !session.initialCandidates.includes(me));
   const canPassBadge = phase === GamePhaseEnum.PASS_BADGE && isSheriff;
   const canSelect = phase === GamePhaseEnum.HUNTER_SHOOT
     ? (isHunter && !isAlive)
     : (canAct || canVote || canElectionVote || canPassBadge);
   const selectable = (idx: number) => canSelect && alive(idx) && idx !== me && !submitted;
 
-  return (
-    <AnimatedBackground phase={phase} className="">
-      <div className="w-full h-screen flex flex-col overflow-hidden">
-        {isTestMode && (
-          <div className={`text-center text-xs px-4 py-1 font-semibold ${botsActing ? "bg-purple-700 text-white animate-pulse" : "bg-purple-900/70 text-purple-300"}`}>
-            {botsActing ? "🤖 [Test Mode] Bots are acting..." : "🤖 Test Mode Active"}
+  // Micro-3D button style constants
+  const btnPrimary = "flex-1 px-4 py-3 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-indigo-500 to-indigo-600 shadow-[0_4px_0_rgb(67,56,202)] active:shadow-none active:translate-y-1 transition-all disabled:opacity-50 disabled:shadow-none disabled:translate-y-0";
+  const btnDanger  = "flex-1 px-4 py-3 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-red-500 to-red-700 shadow-[0_4px_0_rgb(153,27,27)] active:shadow-none active:translate-y-1 transition-all disabled:opacity-50 disabled:shadow-none disabled:translate-y-0";
+  const btnNeutral = "flex-1 px-4 py-3 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-slate-600 to-slate-700 shadow-[0_4px_0_rgb(30,41,59)] active:shadow-none active:translate-y-1 transition-all";
+  const btnAmber   = "w-full px-4 py-2 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-amber-400 to-amber-600 shadow-[0_4px_0_rgb(120,53,15)] active:shadow-none active:translate-y-1 transition-all";
+
+  const renderPlayerCard = (p: PlayerType, idx: number) => {
+    const showActualRole = !!(winner && room?.isShowRole);
+    const actualCharacter = allCharacters.find((c) => c.id === p.role);
+    const isWolf = werewolves.includes(idx);
+    const wolfSelectedThis = wolfSelections[idx];
+    const shouldRevealWolf = isWerewolf && isWolf && phase === GamePhaseEnum.NIGHT;
+
+    const displayCharacter =
+      showActualRole && actualCharacter
+        ? actualCharacter
+        : shouldRevealWolf && actualCharacter
+          ? actualCharacter
+          : {
+              id: 0,
+              name: p.name ?? "Waiting",
+              avatar: "/images/characters/user.jpg",
+              description: "Hidden",
+              team: "villager" as const,
+              priority: 0,
+            };
+
+    const playerKey = `${room.id}-player-${p.name || "empty"}-${p.role}-${idx}`;
+    const selectedTarget =
+      isWerewolf && isWolf && wolfSelectedThis !== undefined && wolfSelectedThis !== null
+        ? players[wolfSelectedThis]?.name || `Player ${wolfSelectedThis + 1}`
+        : null;
+
+    const isGuardBlocked = isGuard && phase === GamePhaseEnum.NIGHT && session.guardLastTarget === idx;
+
+    return (
+      <div key={playerKey} className="relative">
+        <PlayerCard
+          player={p}
+          index={idx}
+          currentPlayerId={me}
+          isAlive={alive(idx)}
+          isSelectable={selectable(idx) && !isGuardBlocked}
+          isSelected={target === idx}
+          character={displayCharacter}
+          actualCharacter={actualCharacter}
+          showActualRole={showActualRole || shouldRevealWolf}
+          onSelect={() => selectable(idx) && !isGuardBlocked && setTarget(idx)}
+          isSheriff={session.sheriffId === idx}
+          isCandidate={session.sheriffCandidates.includes(idx)}
+          isSpeaking={speakingParticipants.includes(`player-${idx}`)}
+          isCurrentSpeaker={session.currentSpeakerId === idx}
+        />
+        {selectedTarget && idx !== me && (
+          <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-red-600 text-white text-[9px] px-1.5 py-0.5 rounded-full whitespace-nowrap z-10">
+            ➜ {selectedTarget}
           </div>
         )}
-        <GameHeader
-          phaseLabel={phaseLabel}
-          day={day}
-          isAlive={isAlive}
-          timerLimit={
-            phase === GamePhaseEnum.ELECTION && session.electionState === "SIGNUP"
-              ? 10
-              : phase === GamePhaseEnum.VOTING ||
-                (phase === GamePhaseEnum.ELECTION &&
-                  (session.electionState === "VOTING" || session.electionState === "PK"))
-                ? 15
-                : room.timerLimit
-          }
-          phase={phase}
-          onTimerEnd={advancePhase}
-          onLeaveGame={leaveGame}
-          currentSpeakerId={session.currentSpeakerId}
-          speakerStartTime={session.speakerStartTime}
-          speakerName={currentSpeakerName}
-          speakDuration={room.timerLimit}
-          onSpeakerTimerEnd={handleSpeakerTimerEnd}
-        />
-        {/* Voice Chat Bar */}
-        <div className="bg-slate-800/90 border-b border-orange-500/20 px-4 py-2 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <VoiceChat
-              sessionId={session.id}
-              playerId={me}
-              playerName={players[me]?.name || `Player ${me + 1}`}
-              phase={phase}
-              currentSpeakerId={session.currentSpeakerId}
-              isCurrentSpeaker={isCurrentSpeaker}
-              onEndTurn={endSpeakerTurn}
-              onSpeakingChange={setSpeakingParticipants}
-            />
+        {isGuardBlocked && (
+          <div className="absolute top-0 right-0 bg-yellow-600 text-white text-[8px] px-1 py-0.5 rounded font-bold z-10">
+            已守
           </div>
-          {session.currentSpeakerId != null && (
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-gray-400">Queue:</span>
-              <span className="text-amber-200 font-semibold">
-                {session.speakerQueue.length} remaining
-              </span>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <AnimatedBackground phase={phase} className="">
+      <div className="w-full min-h-screen flex justify-center bg-black/40">
+        <div className="w-full max-w-md h-[100dvh] flex flex-col relative overflow-hidden bg-slate-950/80">
+
+          {/* Test Mode Banner */}
+          {isTestMode && (
+            <div className={`text-center text-xs px-4 py-1 font-semibold shrink-0 ${botsActing ? "bg-purple-700 text-white animate-pulse" : "bg-purple-900/70 text-purple-300"}`}>
+              {botsActing ? "🤖 [Test Mode] Bots are acting..." : "🤖 Test Mode Active"}
             </div>
           )}
-        </div>
-        <div className="flex-1 flex gap-4 p-4 overflow-hidden">
-          <RolePanel role={role} isRevealed={reveal} onToggleReveal={() => setReveal(!reveal)} />
-          <div className="flex-1 bg-slate-900/80 backdrop-blur-sm rounded-xl border border-orange-500/30 p-6 overflow-y-auto">
-            <h2 className="text-2xl font-bold text-orange-50 mb-4">
-              {winner && room?.isShowRole ? "Final Roles Revealed" : "Players"}
-            </h2>
-            <div className="grid grid-cols-3 gap-4">
-              {players.map((p, idx) => {
-                const showActualRole = !!(winner && room?.isShowRole);
-                const actualCharacter = allCharacters.find((c) => c.id === p.role);
-                const isWolf = werewolves.includes(idx);
-                const wolfSelectedThis = wolfSelections[idx];
-                const shouldRevealWolf = isWerewolf && isWolf && phase === GamePhaseEnum.NIGHT;
 
-                const displayCharacter =
-                  showActualRole && actualCharacter
-                    ? actualCharacter
-                    : shouldRevealWolf && actualCharacter
-                      ? actualCharacter
-                      : {
-                          id: 0,
-                          name: p.name ?? "Waiting",
-                          avatar: "/images/characters/user.jpg",
-                          description: "Hidden",
-                          team: "villager" as const,
-                          priority: 0,
-                        };
+          {/* ── Middle Area: Left | Center | Right ── */}
+          <div className="flex-1 flex flex-row overflow-hidden pb-24 px-1.5 pt-1">
 
-                const playerKey = `${room.id}-player-${p.name || "empty"}-${p.role}-${idx}`;
-                const selectedTarget =
-                  isWerewolf && isWolf && wolfSelectedThis !== undefined && wolfSelectedThis !== null
-                    ? players[wolfSelectedThis]?.name || `Player ${wolfSelectedThis + 1}`
-                    : null;
+            {/* Left Column — players 1–6 (indices 0–5) */}
+            <div className="w-[72px] flex flex-col justify-between gap-1 py-1 shrink-0">
+              {players.slice(0, 6).map((p, i) => renderPlayerCard(p, i))}
+            </div>
 
-                // Guard: visually mark the last guarded player as not selectable
-                const isGuardBlocked = isGuard && phase === GamePhaseEnum.NIGHT && session.guardLastTarget === idx;
+            {/* Center Column — Header + Log + Actions */}
+            <div className="flex-1 flex flex-col mx-1.5 min-w-0 overflow-hidden">
+              <GameHeader
+                phaseLabel={phaseLabel}
+                day={day}
+                isAlive={isAlive}
+                timerLimit={
+                  phase === GamePhaseEnum.ELECTION && session.electionState === "SIGNUP"
+                    ? 10
+                    : phase === GamePhaseEnum.VOTING ||
+                      (phase === GamePhaseEnum.ELECTION &&
+                        (session.electionState === "VOTING" || session.electionState === "PK"))
+                      ? 15
+                      : room.timerLimit
+                }
+                phase={phase}
+                onTimerEnd={advancePhase}
+                onLeaveGame={leaveGame}
+                currentSpeakerId={session.currentSpeakerId}
+                speakerStartTime={session.speakerStartTime}
+                speakerName={currentSpeakerName}
+                speakDuration={room.timerLimit}
+                onSpeakerTimerEnd={handleSpeakerTimerEnd}
+              />
 
-                return (
-                  <div key={playerKey} className="relative">
-                    <PlayerCard
-                      player={p}
-                      index={idx}
-                      currentPlayerId={me}
-                      isAlive={alive(idx)}
-                      isSelectable={selectable(idx) && !isGuardBlocked}
-                      isSelected={target === idx}
-                      character={displayCharacter}
-                      actualCharacter={actualCharacter}
-                      showActualRole={showActualRole || shouldRevealWolf}
-                      onSelect={() => selectable(idx) && !isGuardBlocked && setTarget(idx)}
-                      isSheriff={session.sheriffId === idx}
-                      isCandidate={session.sheriffCandidates.includes(idx)}
-                      isSpeaking={speakingParticipants.includes(`player-${idx}`)}
-                      isCurrentSpeaker={session.currentSpeakerId === idx}
-                    />
-                    {selectedTarget && idx !== me && (
-                      <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 bg-red-600 text-white text-xs px-2 py-1 rounded-full whitespace-nowrap">
-                        → {selectedTarget}
+              {/* Role chip */}
+              <button
+                onClick={() => setReveal(!reveal)}
+                className="mt-1 mb-1 mx-auto flex items-center gap-1.5 px-3 py-1 bg-slate-800/70 border border-white/10 rounded-full text-[10px] text-white/70 hover:text-white/90 transition-colors shrink-0"
+              >
+                <span>{reveal ? "🙈" : "👁"}</span>
+                <span className="truncate max-w-[80px]">{role.name}</span>
+              </button>
+
+              {/* Game Log — compact fixed height, scrollable */}
+              <div className="h-28 shrink-0 bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden flex flex-col">
+                <GameLog logs={logs} />
+              </div>
+
+              {/* Actions panel — fills remaining space, scrollable */}
+              <div className="flex-1 min-h-0 overflow-y-auto mt-1.5 space-y-2 pb-1 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+                {(() => {
+                  if (winner) {
+                    return (
+                      <GameStatistics
+                        winner={winner}
+                        day={day}
+                        alivePlayers={session.alivePlayers}
+                        deadPlayers={session.deadPlayers}
+                        onLeaveGame={leaveGame}
+                      />
+                    );
+                  }
+
+                  // ── HUNTER SHOOT PHASE ──
+                  if (phase === GamePhaseEnum.HUNTER_SHOOT) {
+                    if (isHunter && !isAlive) {
+                      return (
+                        <div className="space-y-2">
+                          <p className="text-orange-200/80 text-xs text-center">🔫 选择一名玩家带走，或放弃开枪</p>
+                          <div className="flex gap-2">
+                            <button className={btnDanger} onClick={() => submitHunterShoot(target)} disabled={target === null}>
+                              🔫 开枪带走
+                            </button>
+                            <button className={btnNeutral} onClick={() => submitHunterShoot(null)}>
+                              放弃开枪
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return (
+                      <p className="text-orange-200/70 text-xs text-center py-2">🔫 猎人正在选择开枪目标...</p>
+                    );
+                  }
+
+                  if (!isAlive) {
+                    return (
+                      <p className="text-red-300/70 text-xs text-center py-2">💀 你已出局，静观其变</p>
+                    );
+                  }
+
+                  // ── NIGHT PHASE ──
+                  if (phase === GamePhaseEnum.NIGHT) {
+                    if (canAct) {
+                      const wolfHint =
+                        isWerewolf && !wolfConsensus
+                          ? "⚠️ 所有狼人须选同一目标"
+                          : isWerewolf && wolfConsensus
+                            ? "✓ 狼人已达成共识"
+                            : undefined;
+
+                      const wolfTargetName =
+                        wolfTargetId !== null
+                          ? players[wolfTargetId]?.name || `Player ${wolfTargetId + 1}`
+                          : null;
+
+                      return (
+                        <NightPhaseActions
+                          canAct={canAct}
+                          submitted={submitted}
+                          target={target}
+                          onSubmitAction={submitNightAction}
+                          onSkipAction={skipNightAction}
+                          submitDisabled={isWerewolf && !wolfConsensus}
+                          hint={wolfHint}
+                          roleName={role?.name}
+                          wolfTargetName={wolfTargetName}
+                          witchHealUsed={session.witchHealUsed}
+                          witchPoisonUsed={session.witchPoisonUsed}
+                          guardLastTarget={session.guardLastTarget}
+                        />
+                      );
+                    }
+                    if (submitted && revealedTarget && isSeer) {
+                      const targetName = players[revealedTarget.playerId]?.name || `Player ${revealedTarget.playerId + 1}`;
+                      return (
+                        <div className="space-y-1.5">
+                          <p className="text-green-300 text-xs text-center">✓ 已提交，等待其他玩家...</p>
+                          <div className="p-2.5 bg-blue-900/30 rounded-xl border border-blue-500/20">
+                            <p className="text-blue-200 text-xs font-semibold mb-1">🔮 查验结果：</p>
+                            <p className="text-blue-100 text-xs">
+                              {targetName} 是{" "}
+                              <span className={`font-bold ${revealedTarget.isWolf ? "text-red-400" : "text-green-400"}`}>
+                                {revealedTarget.isWolf ? "狼人 🐺" : "好人 🧑‍🌾"}
+                              </span>
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    }
+                    if (submitted) {
+                      return <p className="text-green-300/80 text-xs text-center py-2">✓ 已提交，等待其他玩家...</p>;
+                    }
+                    return <p className="text-white/40 text-xs text-center py-2">🌙 等待夜晚行动...</p>;
+                  }
+
+                  // ── ELECTION PHASE ──
+                  if (phase === GamePhaseEnum.ELECTION) {
+                    return (
+                      <div className="space-y-2">
+                        {canBlowUp && (
+                          <button
+                            className="w-full px-4 py-3 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-red-500 to-red-700 shadow-[0_4px_0_rgb(153,27,27)] active:shadow-none active:translate-y-1 transition-all animate-pulse"
+                            onClick={blowUp}
+                          >
+                            💥 立即自爆
+                          </button>
+                        )}
+                        {session.electionState === "SPEAKING" && session.currentSpeakerId != null && (
+                          <div className="p-2.5 bg-amber-900/30 rounded-xl border border-amber-500/20">
+                            <p className="text-amber-200 text-xs font-semibold">
+                              🎤 {currentSpeakerName} 正在警上发言
+                              {session.speakerQueue.length > 0 && (
+                                <span className="text-amber-100/60 font-normal ml-1.5">(剩余 {session.speakerQueue.length} 人)</span>
+                              )}
+                            </p>
+                            {isCurrentSpeaker && (
+                              <button className={`mt-2 ${btnAmber}`} onClick={endSpeakerTurn}>
+                                结束发言 / 过麦 ⏭️
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        <ElectionPhaseActions
+                          electionState={session.electionState}
+                          submitted={submitted}
+                          candidates={session.sheriffCandidates}
+                          players={players}
+                          currentPlayerId={me}
+                          target={target}
+                          chatMessages={chatMessages}
+                          chatInput={chatInput}
+                          onSignup={() => submitElectionAction("signup")}
+                          onOptOut={() => submitElectionAction("opt_out")}
+                          onWithdraw={() => submitElectionAction("withdraw")}
+                          onVote={() => target !== null && submitElectionAction("election_vote", target)}
+                          onChatInputChange={setChatInput}
+                          onSendChat={sendChat}
+                        />
                       </div>
-                    )}
-                    {isGuardBlocked && (
-                      <div className="absolute top-1 right-1 bg-yellow-600 text-white text-xs px-2 py-0.5 rounded font-bold">
-                        昨晚已守
+                    );
+                  }
+
+                  // ── PASS BADGE PHASE ──
+                  if (phase === GamePhaseEnum.PASS_BADGE) {
+                    if (isSheriff) {
+                      return (
+                        <div className="space-y-2">
+                          <p className="text-amber-200/80 text-xs text-center">🌟 你已死亡，请移交或撕毁警徽</p>
+                          <div className="flex gap-2">
+                            <button className={btnPrimary} onClick={() => submitPassBadge(target)} disabled={target === null}>
+                              移交给 {target !== null ? (players[target]?.name || `P${target + 1}`) : "..."}
+                            </button>
+                            <button className={btnNeutral} onClick={() => submitPassBadge(null)}>
+                              撕毁警徽
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return <p className="text-amber-200/70 text-xs text-center py-2">🌟 等待警长移交警徽...</p>;
+                  }
+
+                  // ── DAY PHASE ──
+                  if (phase === GamePhaseEnum.DAY) {
+                    return (
+                      <div className="space-y-2">
+                        {canBlowUp && (
+                          <button
+                            className="w-full px-4 py-3 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-red-500 to-red-700 shadow-[0_4px_0_rgb(153,27,27)] active:shadow-none active:translate-y-1 transition-all animate-pulse"
+                            onClick={blowUp}
+                          >
+                            💥 立即自爆
+                          </button>
+                        )}
+                        {session.currentSpeakerId != null && (
+                          <div className="p-2.5 bg-amber-900/30 rounded-xl border border-amber-500/20">
+                            <p className="text-amber-200 text-xs font-semibold">
+                              🎤 {currentSpeakerName} 正在发言
+                              {session.speakerQueue.length > 0 && (
+                                <span className="text-amber-100/60 font-normal ml-1.5">(剩余 {session.speakerQueue.length} 人)</span>
+                              )}
+                            </p>
+                            {isCurrentSpeaker && (
+                              <button className={`mt-2 ${btnAmber}`} onClick={endSpeakerTurn}>
+                                结束发言 / 过麦 ⏭️
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        <DayPhaseActions
+                          chatMessages={chatMessages}
+                          chatInput={chatInput}
+                          currentPlayerId={me}
+                          onChatInputChange={setChatInput}
+                          onSendChat={sendChat}
+                        />
                       </div>
-                    )}
-                  </div>
-                );
-              })}
+                    );
+                  }
+
+                  // ── VOTING PHASE ──
+                  if (phase === GamePhaseEnum.VOTING) {
+                    return (
+                      <VotingPhaseActions
+                        submitted={submitted}
+                        target={target}
+                        chatMessages={chatMessages}
+                        chatInput={chatInput}
+                        currentPlayerId={me}
+                        onSubmitVote={submitVote}
+                        onChatInputChange={setChatInput}
+                        onSendChat={sendChat}
+                      />
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
+            </div>
+
+            {/* Right Column — players 7–12 (indices 6–11) */}
+            <div className="w-[72px] flex flex-col justify-between gap-1 py-1 shrink-0 items-end">
+              {players.slice(6, 12).map((p, i) => renderPlayerCard(p, i + 6))}
             </div>
           </div>
-          <div className="w-80 bg-slate-900/80 backdrop-blur-sm rounded-xl border border-orange-500/30 p-6 space-y-4 overflow-y-auto">
-            <h2 className="text-2xl font-bold text-orange-50 mb-4">Actions</h2>
-            {(() => {
-              if (winner) {
-                return (
-                  <GameStatistics
-                    winner={winner}
-                    day={day}
-                    alivePlayers={session.alivePlayers}
-                    deadPlayers={session.deadPlayers}
-                    onLeaveGame={leaveGame}
-                  />
-                );
-              }
 
-              // ── HUNTER SHOOT PHASE ──
-              if (phase === GamePhaseEnum.HUNTER_SHOOT) {
-                if (isHunter && !isAlive) {
-                  return (
-                    <div className="space-y-3">
-                      <div className="p-4 bg-orange-900/30 rounded-lg border border-orange-500/30">
-                        <h3 className="text-orange-200 font-semibold mb-2">🔫 猎人开枪</h3>
-                        <p className="text-orange-100/80 text-sm">
-                          你已死亡！选择一名玩家带走，或放弃开枪。
-                        </p>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          className="flex-1 px-4 py-3 text-sm rounded-lg bg-red-700 hover:bg-red-600 text-white font-semibold disabled:opacity-50"
-                          onClick={() => submitHunterShoot(target)}
-                          disabled={target === null}
-                        >
-                          开枪带走
-                        </button>
-                        <button
-                          className="flex-1 px-4 py-3 text-sm rounded-lg bg-gray-600 hover:bg-gray-500 text-white font-semibold"
-                          onClick={() => submitHunterShoot(null)}
-                        >
-                          放弃开枪
-                        </button>
-                      </div>
-                    </div>
-                  );
-                }
-                return (
-                  <div className="p-4 bg-orange-900/30 rounded-lg border border-orange-500/30">
-                    <p className="text-orange-200 text-sm">🔫 猎人正在选择开枪目标...</p>
-                  </div>
-                );
-              }
-
-              if (!isAlive) {
-                return (
-                  <div className="p-4 bg-red-900/30 rounded-lg border border-red-500/30">
-                    <p className="text-red-200 text-sm">You have been eliminated. Watch as the game continues.</p>
-                  </div>
-                );
-              }
-
-              // ── NIGHT PHASE ──
-              if (phase === GamePhaseEnum.NIGHT) {
-                if (canAct) {
-                  const wolfHint =
-                    isWerewolf && !wolfConsensus
-                      ? "⚠️ All werewolves must select the same target to proceed"
-                      : isWerewolf && wolfConsensus
-                        ? "✓ All werewolves agree on the target"
-                        : undefined;
-
-                  const wolfTargetName =
-                    wolfTargetId !== null
-                      ? players[wolfTargetId]?.name || `Player ${wolfTargetId + 1}`
-                      : null;
-
-                  return (
-                    <NightPhaseActions
-                      canAct={canAct}
-                      submitted={submitted}
-                      target={target}
-                      onSubmitAction={submitNightAction}
-                      onSkipAction={skipNightAction}
-                      submitDisabled={isWerewolf && !wolfConsensus}
-                      hint={wolfHint}
-                      roleName={role?.name}
-                      wolfTargetName={wolfTargetName}
-                      witchHealUsed={session.witchHealUsed}
-                      witchPoisonUsed={session.witchPoisonUsed}
-                      guardLastTarget={session.guardLastTarget}
-                    />
-                  );
-                }
-                // Seer submitted: show vision result
-                if (submitted && revealedTarget && isSeer) {
-                  const targetName = players[revealedTarget.playerId]?.name || `Player ${revealedTarget.playerId + 1}`;
-                  return (
-                    <div className="space-y-3">
-                      <div className="p-4 bg-green-900/30 rounded-lg border border-green-500/30">
-                        <p className="text-green-200 text-sm">✓ Action submitted. Waiting for other players...</p>
-                      </div>
-                      <div className="p-4 bg-blue-900/30 rounded-lg border border-blue-500/30">
-                        <p className="text-blue-200 text-sm font-semibold mb-2">🔮 查验结果：</p>
-                        <p className="text-blue-100 text-sm">
-                          {targetName} 是{" "}
-                          <span className={`font-bold ${revealedTarget.isWolf ? "text-red-400" : "text-green-400"}`}>
-                            {revealedTarget.isWolf ? "狼人 🐺" : "好人 🧑‍🌾"}
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-                  );
-                }
-                if (submitted) {
-                  return (
-                    <div className="p-4 bg-green-900/30 rounded-lg border border-green-500/30">
-                      <p className="text-green-200 text-sm">✓ Action submitted. Waiting for other players...</p>
-                    </div>
-                  );
-                }
-                return <p className="text-orange-100/80 text-sm">Waiting for night actions...</p>;
-              }
-
-              // ── ELECTION PHASE ──
-              if (phase === GamePhaseEnum.ELECTION) {
-                return (
-                  <div className="space-y-3">
-                    {canBlowUp && (
-                      <button
-                        className="w-full px-4 py-3 text-sm rounded-lg bg-red-800 hover:bg-red-700 text-white font-bold border-2 border-red-500 animate-pulse"
-                        onClick={blowUp}
-                      >
-                        💥 立即自爆
-                      </button>
-                    )}
-                    {/* Speaker turn info during SPEAKING sub-phase */}
-                    {session.electionState === "SPEAKING" && session.currentSpeakerId != null && (
-                      <div className="p-3 bg-amber-900/30 rounded-lg border border-amber-500/30">
-                        <p className="text-amber-200 text-sm font-semibold">
-                          🎤 {currentSpeakerName} 正在警上发言
-                          {session.speakerQueue.length > 0 && (
-                            <span className="text-amber-100/70 font-normal ml-2">
-                              (剩余 {session.speakerQueue.length} 人)
-                            </span>
-                          )}
-                        </p>
-                        {isCurrentSpeaker && (
-                          <button
-                            className="mt-2 w-full px-4 py-2 text-sm rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold transition-colors"
-                            onClick={endSpeakerTurn}
-                          >
-                            结束发言 / 过麦 ⏭️
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    <ElectionPhaseActions
-                      electionState={session.electionState}
-                      submitted={submitted}
-                      candidates={session.sheriffCandidates}
-                      players={players}
-                      currentPlayerId={me}
-                      target={target}
-                      chatMessages={chatMessages}
-                      chatInput={chatInput}
-                      onSignup={() => submitElectionAction("signup")}
-                      onOptOut={() => submitElectionAction("opt_out")}
-                      onWithdraw={() => submitElectionAction("withdraw")}
-                      onVote={() => target !== null && submitElectionAction("election_vote", target)}
-                      onChatInputChange={setChatInput}
-                      onSendChat={sendChat}
-                    />
-                  </div>
-                );
-              }
-
-              // ── PASS BADGE PHASE ──
-              if (phase === GamePhaseEnum.PASS_BADGE) {
-                if (isSheriff) {
-                  return (
-                    <div className="space-y-3">
-                      <div className="p-4 bg-amber-900/30 rounded-lg border border-amber-500/30">
-                        <h3 className="text-amber-200 font-semibold mb-2">🌟 移交警徽</h3>
-                        <p className="text-amber-100/80 text-sm">
-                          你已死亡。请选择将警徽移交给一名存活玩家，或撕毁警徽。
-                        </p>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          className="flex-1 px-4 py-3 text-sm rounded-lg bg-amber-700 hover:bg-amber-600 text-white font-semibold disabled:opacity-50"
-                          onClick={() => submitPassBadge(target)}
-                          disabled={target === null}
-                        >
-                          移交给 {target !== null ? (players[target]?.name || `Player ${target + 1}`) : "..."}
-                        </button>
-                        <button
-                          className="flex-1 px-4 py-3 text-sm rounded-lg bg-gray-600 hover:bg-gray-500 text-white font-semibold"
-                          onClick={() => submitPassBadge(null)}
-                        >
-                          撕毁警徽
-                        </button>
-                      </div>
-                    </div>
-                  );
-                }
-                return (
-                  <div className="p-4 bg-amber-900/30 rounded-lg border border-amber-500/30">
-                    <p className="text-amber-200 text-sm">🌟 等待警长移交警徽...</p>
-                  </div>
-                );
-              }
-
-              // ── DAY PHASE ──
-              if (phase === GamePhaseEnum.DAY) {
-                return (
-                  <div className="space-y-3">
-                    {canBlowUp && (
-                      <button
-                        className="w-full px-4 py-3 text-sm rounded-lg bg-red-800 hover:bg-red-700 text-white font-bold border-2 border-red-500 animate-pulse"
-                        onClick={blowUp}
-                      >
-                        💥 立即自爆
-                      </button>
-                    )}
-                    {/* Speaker turn info */}
-                    {session.currentSpeakerId != null && (
-                      <div className="p-3 bg-amber-900/30 rounded-lg border border-amber-500/30">
-                        <p className="text-amber-200 text-sm font-semibold">
-                          🎤 {currentSpeakerName} 正在发言
-                          {session.speakerQueue.length > 0 && (
-                            <span className="text-amber-100/70 font-normal ml-2">
-                              (剩余 {session.speakerQueue.length} 人)
-                            </span>
-                          )}
-                        </p>
-                        {isCurrentSpeaker && (
-                          <button
-                            className="mt-2 w-full px-4 py-2 text-sm rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold transition-colors"
-                            onClick={endSpeakerTurn}
-                          >
-                            结束发言 / 过麦 ⏭️
-                          </button>
-                        )}
-                      </div>
-                    )}
-                    <DayPhaseActions
-                      chatMessages={chatMessages}
-                      chatInput={chatInput}
-                      currentPlayerId={me}
-                      onChatInputChange={setChatInput}
-                      onSendChat={sendChat}
-                    />
-                  </div>
-                );
-              }
-
-              // ── VOTING PHASE ──
-              if (phase === GamePhaseEnum.VOTING) {
-                return (
-                  <VotingPhaseActions
-                    submitted={submitted}
-                    target={target}
-                    chatMessages={chatMessages}
-                    chatInput={chatInput}
-                    currentPlayerId={me}
-                    onSubmitVote={submitVote}
-                    onChatInputChange={setChatInput}
-                    onSendChat={sendChat}
-                  />
-                );
-              }
-              return null;
-            })()}
-            <GameLog logs={logs} />
+          {/* ── Bottom Dock — FAB mic only ── */}
+          <div className="absolute bottom-0 left-0 w-full z-20 bg-slate-900/90 backdrop-blur-xl border-t border-white/10 rounded-t-2xl px-4 pt-3 pb-5">
+            <div className="flex items-center justify-center gap-4">
+              <VoiceChat
+                sessionId={session.id}
+                playerId={me}
+                playerName={players[me]?.name || `Player ${me + 1}`}
+                phase={phase}
+                currentSpeakerId={session.currentSpeakerId}
+                isCurrentSpeaker={isCurrentSpeaker}
+                onEndTurn={endSpeakerTurn}
+                onSpeakingChange={setSpeakingParticipants}
+              />
+              {session.currentSpeakerId != null && (
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="text-white/35">队列</span>
+                  <span className="text-amber-300 font-bold">{session.speakerQueue.length}</span>
+                  <span className="text-white/35">人</span>
+                </div>
+              )}
+            </div>
           </div>
+
         </div>
       </div>
     </AnimatedBackground>

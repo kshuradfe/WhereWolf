@@ -7,6 +7,7 @@ interface SpeakerTimerProps {
   speakDuration: number; // seconds per speaker
   onTimeEnd: () => void;
   className?: string;
+  compact?: boolean;
 }
 
 export default function SpeakerTimer({
@@ -14,6 +15,7 @@ export default function SpeakerTimer({
   speakDuration,
   onTimeEnd,
   className = "",
+  compact = false,
 }: SpeakerTimerProps) {
   const [timeLeft, setTimeLeft] = useState(speakDuration);
 
@@ -65,10 +67,10 @@ export default function SpeakerTimer({
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className={`text-2xl font-bold ${colorClass}`}>
+        <span className={`font-bold ${colorClass} ${compact ? "text-[10px] leading-none" : "text-2xl"}`}>
           {minutes}:{seconds.toString().padStart(2, "0")}
         </span>
-        <span className="text-xs text-gray-400 mt-0.5">Speaker</span>
+        {!compact && <span className="text-xs text-gray-400 mt-0.5">Speaker</span>}
       </div>
     </div>
   );
