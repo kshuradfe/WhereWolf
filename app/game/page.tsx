@@ -1068,14 +1068,14 @@ export default function GamePage() {
           )}
 
           {/* ── Middle Area: Left | Center | Right ── */}
-          <div className="flex-1 flex flex-row overflow-hidden pb-24 px-1.5 pt-1">
+          <div className="flex-1 flex flex-row overflow-hidden pb-36 px-1.5 pt-1">
 
             {/* Left Column — players 1–6 (indices 0–5) */}
             <div className="w-[72px] flex flex-col justify-between gap-1 py-1 shrink-0">
               {players.slice(0, 6).map((p, i) => renderPlayerCard(p, i))}
             </div>
 
-            {/* Center Column — Header + Log + Actions */}
+            {/* Center Column — Header + GameLog (flex-1) + compact Actions */}
             <div className="flex-1 flex flex-col mx-1.5 min-w-0 overflow-hidden">
               <GameHeader
                 phaseLabel={phaseLabel}
@@ -1109,13 +1109,23 @@ export default function GamePage() {
                 <span className="truncate max-w-[80px]">{role.name}</span>
               </button>
 
-              {/* Game Log — compact fixed height, scrollable */}
-              <div className="h-28 shrink-0 bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden flex flex-col">
+              {/* Game Log — takes all remaining space */}
+              <div className="flex-1 min-h-0 bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden flex flex-col">
                 <GameLog logs={logs} />
               </div>
 
-              {/* Actions panel — fills remaining space, scrollable */}
-              <div className="flex-1 min-h-0 overflow-y-auto mt-1.5 space-y-2 pb-1 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+              {/* Pass-mic button — below GameLog, only for current speaker */}
+              {isCurrentSpeaker && (
+                <button
+                  onClick={endSpeakerTurn}
+                  className="shrink-0 mt-1.5 w-full px-4 py-2.5 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-amber-400 to-amber-600 shadow-[0_4px_0_rgb(120,53,15)] active:shadow-none active:translate-y-1 transition-all"
+                >
+                  结束发言 / 过麦 ⏭️
+                </button>
+              )}
+
+              {/* Compact Actions — no chat, no blowup (those are floating), no duplicate pass-mic */}
+              <div className="shrink-0 mt-1.5 space-y-1.5 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
                 {(() => {
                   if (winner) {
                     return (
@@ -1133,8 +1143,8 @@ export default function GamePage() {
                   if (phase === GamePhaseEnum.HUNTER_SHOOT) {
                     if (isHunter && !isAlive) {
                       return (
-                        <div className="space-y-2">
-                          <p className="text-orange-200/80 text-xs text-center">🔫 选择一名玩家带走，或放弃开枪</p>
+                        <div className="space-y-1.5">
+                          <p className="text-orange-200/80 text-xs text-center">🔫 选择一名玩家带走，或放弃</p>
                           <div className="flex gap-2">
                             <button className={btnDanger} onClick={() => submitHunterShoot(target)} disabled={target === null}>
                               🔫 开枪带走
@@ -1146,15 +1156,11 @@ export default function GamePage() {
                         </div>
                       );
                     }
-                    return (
-                      <p className="text-orange-200/70 text-xs text-center py-2">🔫 猎人正在选择开枪目标...</p>
-                    );
+                    return <p className="text-orange-200/60 text-xs text-center py-1">🔫 猎人正在选择目标...</p>;
                   }
 
                   if (!isAlive) {
-                    return (
-                      <p className="text-red-300/70 text-xs text-center py-2">💀 你已出局，静观其变</p>
-                    );
+                    return <p className="text-red-300/60 text-xs text-center py-1">💀 你已出局，静观其变</p>;
                   }
 
                   // ── NIGHT PHASE ──
@@ -1166,12 +1172,10 @@ export default function GamePage() {
                           : isWerewolf && wolfConsensus
                             ? "✓ 狼人已达成共识"
                             : undefined;
-
                       const wolfTargetName =
                         wolfTargetId !== null
                           ? players[wolfTargetId]?.name || `Player ${wolfTargetId + 1}`
                           : null;
-
                       return (
                         <NightPhaseActions
                           canAct={canAct}
@@ -1207,55 +1211,26 @@ export default function GamePage() {
                       );
                     }
                     if (submitted) {
-                      return <p className="text-green-300/80 text-xs text-center py-2">✓ 已提交，等待其他玩家...</p>;
+                      return <p className="text-green-300/80 text-xs text-center py-1">✓ 已提交，等待其他玩家...</p>;
                     }
-                    return <p className="text-white/40 text-xs text-center py-2">🌙 等待夜晚行动...</p>;
+                    return <p className="text-white/35 text-xs text-center py-1">🌙 等待夜晚行动...</p>;
                   }
 
                   // ── ELECTION PHASE ──
                   if (phase === GamePhaseEnum.ELECTION) {
                     return (
-                      <div className="space-y-2">
-                        {canBlowUp && (
-                          <button
-                            className="w-full px-4 py-3 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-red-500 to-red-700 shadow-[0_4px_0_rgb(153,27,27)] active:shadow-none active:translate-y-1 transition-all animate-pulse"
-                            onClick={blowUp}
-                          >
-                            💥 立即自爆
-                          </button>
-                        )}
-                        {session.electionState === "SPEAKING" && session.currentSpeakerId != null && (
-                          <div className="p-2.5 bg-amber-900/30 rounded-xl border border-amber-500/20">
-                            <p className="text-amber-200 text-xs font-semibold">
-                              🎤 {currentSpeakerName} 正在警上发言
-                              {session.speakerQueue.length > 0 && (
-                                <span className="text-amber-100/60 font-normal ml-1.5">(剩余 {session.speakerQueue.length} 人)</span>
-                              )}
-                            </p>
-                            {isCurrentSpeaker && (
-                              <button className={`mt-2 ${btnAmber}`} onClick={endSpeakerTurn}>
-                                结束发言 / 过麦 ⏭️
-                              </button>
-                            )}
-                          </div>
-                        )}
-                        <ElectionPhaseActions
-                          electionState={session.electionState}
-                          submitted={submitted}
-                          candidates={session.sheriffCandidates}
-                          players={players}
-                          currentPlayerId={me}
-                          target={target}
-                          chatMessages={chatMessages}
-                          chatInput={chatInput}
-                          onSignup={() => submitElectionAction("signup")}
-                          onOptOut={() => submitElectionAction("opt_out")}
-                          onWithdraw={() => submitElectionAction("withdraw")}
-                          onVote={() => target !== null && submitElectionAction("election_vote", target)}
-                          onChatInputChange={setChatInput}
-                          onSendChat={sendChat}
-                        />
-                      </div>
+                      <ElectionPhaseActions
+                        electionState={session.electionState}
+                        submitted={submitted}
+                        candidates={session.sheriffCandidates}
+                        players={players}
+                        currentPlayerId={me}
+                        target={target}
+                        onSignup={() => submitElectionAction("signup")}
+                        onOptOut={() => submitElectionAction("opt_out")}
+                        onWithdraw={() => submitElectionAction("withdraw")}
+                        onVote={() => target !== null && submitElectionAction("election_vote", target)}
+                      />
                     );
                   }
 
@@ -1263,7 +1238,7 @@ export default function GamePage() {
                   if (phase === GamePhaseEnum.PASS_BADGE) {
                     if (isSheriff) {
                       return (
-                        <div className="space-y-2">
+                        <div className="space-y-1.5">
                           <p className="text-amber-200/80 text-xs text-center">🌟 你已死亡，请移交或撕毁警徽</p>
                           <div className="flex gap-2">
                             <button className={btnPrimary} onClick={() => submitPassBadge(target)} disabled={target === null}>
@@ -1276,62 +1251,45 @@ export default function GamePage() {
                         </div>
                       );
                     }
-                    return <p className="text-amber-200/70 text-xs text-center py-2">🌟 等待警长移交警徽...</p>;
+                    return <p className="text-amber-200/60 text-xs text-center py-1">🌟 等待警长移交警徽...</p>;
                   }
 
-                  // ── DAY PHASE ──
+                  // ── DAY PHASE — speaker status only, no chat ──
                   if (phase === GamePhaseEnum.DAY) {
-                    return (
-                      <div className="space-y-2">
-                        {canBlowUp && (
-                          <button
-                            className="w-full px-4 py-3 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-red-500 to-red-700 shadow-[0_4px_0_rgb(153,27,27)] active:shadow-none active:translate-y-1 transition-all animate-pulse"
-                            onClick={blowUp}
-                          >
-                            💥 立即自爆
-                          </button>
-                        )}
-                        {session.currentSpeakerId != null && (
-                          <div className="p-2.5 bg-amber-900/30 rounded-xl border border-amber-500/20">
-                            <p className="text-amber-200 text-xs font-semibold">
-                              🎤 {currentSpeakerName} 正在发言
-                              {session.speakerQueue.length > 0 && (
-                                <span className="text-amber-100/60 font-normal ml-1.5">(剩余 {session.speakerQueue.length} 人)</span>
-                              )}
-                            </p>
-                            {isCurrentSpeaker && (
-                              <button className={`mt-2 ${btnAmber}`} onClick={endSpeakerTurn}>
-                                结束发言 / 过麦 ⏭️
-                              </button>
+                    if (session.currentSpeakerId != null) {
+                      return (
+                        <div className="p-2 bg-amber-900/25 rounded-xl border border-amber-500/20">
+                          <p className="text-amber-200 text-xs font-semibold">
+                            🎤 {currentSpeakerName} 正在发言
+                            {session.speakerQueue.length > 0 && (
+                              <span className="text-amber-100/50 font-normal ml-1.5">(剩余 {session.speakerQueue.length} 人)</span>
                             )}
-                          </div>
-                        )}
-                        <DayPhaseActions
-                          chatMessages={chatMessages}
-                          chatInput={chatInput}
-                          currentPlayerId={me}
-                          onChatInputChange={setChatInput}
-                          onSendChat={sendChat}
-                        />
+                          </p>
+                        </div>
+                      );
+                    }
+                    return null;
+                  }
+
+                  // ── VOTING PHASE — just the vote button, no chat ──
+                  if (phase === GamePhaseEnum.VOTING) {
+                    if (submitted) {
+                      return <p className="text-green-300/80 text-xs text-center py-1">✓ 已投票，等待其他玩家...</p>;
+                    }
+                    return (
+                      <div className="space-y-1.5">
+                        <p className="text-red-200/70 text-xs text-center">
+                          {target !== null ? `🗳️ 投票淘汰 玩家 ${target + 1}` : "🗳️ 选择一名玩家投票"}
+                        </p>
+                        <div className="flex gap-2">
+                          <button className={btnDanger} onClick={submitVote} disabled={target === null}>
+                            提交投票
+                          </button>
+                        </div>
                       </div>
                     );
                   }
 
-                  // ── VOTING PHASE ──
-                  if (phase === GamePhaseEnum.VOTING) {
-                    return (
-                      <VotingPhaseActions
-                        submitted={submitted}
-                        target={target}
-                        chatMessages={chatMessages}
-                        chatInput={chatInput}
-                        currentPlayerId={me}
-                        onSubmitVote={submitVote}
-                        onChatInputChange={setChatInput}
-                        onSendChat={sendChat}
-                      />
-                    );
-                  }
                   return null;
                 })()}
               </div>
@@ -1343,24 +1301,35 @@ export default function GamePage() {
             </div>
           </div>
 
-          {/* ── Bottom Dock — FAB mic only ── */}
-          <div className="absolute bottom-0 left-0 w-full z-20 bg-slate-900/90 backdrop-blur-xl border-t border-white/10 rounded-t-2xl px-4 pt-3 pb-5">
-            <div className="flex items-center justify-center gap-4">
+          {/* ── Floating Blow-Up Button — bottom-left, above dock ── */}
+          {canBlowUp && (
+            <div className="absolute bottom-[148px] left-4 z-50 flex flex-col items-center gap-1">
+              <button
+                onClick={blowUp}
+                className="w-12 h-12 bg-gradient-to-b from-red-600 to-red-800 rounded-full shadow-[0_4px_0_rgb(153,27,27)] active:shadow-none active:translate-y-1 flex items-center justify-center text-xl transition-all animate-pulse"
+              >
+                💥
+              </button>
+              <span className="text-[10px] text-white/70 font-bold tracking-widest drop-shadow-md">自爆</span>
+            </div>
+          )}
+
+          {/* ── Bottom Dock — large centered FAB mic ── */}
+          <div className="absolute bottom-0 left-0 w-full z-20 bg-slate-900/90 backdrop-blur-xl border-t border-white/10 rounded-t-2xl px-4 pt-4 pb-6">
+            <div className="flex items-center justify-center relative">
               <VoiceChat
                 sessionId={session.id}
                 playerId={me}
                 playerName={players[me]?.name || `Player ${me + 1}`}
                 phase={phase}
                 currentSpeakerId={session.currentSpeakerId}
-                isCurrentSpeaker={isCurrentSpeaker}
-                onEndTurn={endSpeakerTurn}
                 onSpeakingChange={setSpeakingParticipants}
               />
+              {/* Queue counter — top-right of dock */}
               {session.currentSpeakerId != null && (
-                <div className="flex items-center gap-1 text-xs">
-                  <span className="text-white/35">队列</span>
-                  <span className="text-amber-300 font-bold">{session.speakerQueue.length}</span>
-                  <span className="text-white/35">人</span>
+                <div className="absolute right-0 top-1/2 -translate-y-1/2 flex flex-col items-center">
+                  <span className="text-amber-300 font-bold text-sm leading-none">{session.speakerQueue.length}</span>
+                  <span className="text-white/30 text-[9px]">队列</span>
                 </div>
               )}
             </div>

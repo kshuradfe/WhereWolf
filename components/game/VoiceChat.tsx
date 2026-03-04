@@ -7,10 +7,8 @@ import {
   useLocalParticipant,
   useParticipants,
   useIsSpeaking,
-  TrackToggle,
 } from "@livekit/components-react";
 import "@livekit/components-styles";
-import { Track } from "livekit-client";
 import { getApiService } from "@/services/apiService";
 import type { ApiResponse } from "@/lib/types";
 
@@ -20,8 +18,6 @@ interface VoiceChatProps {
   playerName: string;
   phase: string;
   currentSpeakerId: number | null;
-  isCurrentSpeaker: boolean;
-  onEndTurn: () => void;
   onSpeakingChange?: (participantIds: string[]) => void;
 }
 
@@ -31,13 +27,21 @@ interface TokenData {
   canPublish: boolean;
 }
 
+/** Reusable disabled FAB when outside a LiveKit room */
+function DisabledFAB({ label }: { label: string }) {
+  return (
+    <div className="flex flex-col items-center gap-1.5">
+      <div className="w-20 h-20 rounded-full flex items-center justify-center text-3xl bg-slate-800/40 border border-white/8 opacity-50">
+        🎤
+      </div>
+      <span className="text-[10px] text-white/25 tracking-wide">{label}</span>
+    </div>
+  );
+}
+
 function VoiceChatInner({
-  isCurrentSpeaker,
-  onEndTurn,
   onSpeakingChange,
 }: {
-  isCurrentSpeaker: boolean;
-  onEndTurn: () => void;
   onSpeakingChange?: (participantIds: string[]) => void;
 }) {
   const { localParticipant } = useLocalParticipant();
@@ -53,41 +57,51 @@ function VoiceChatInner({
   }, [participants, onSpeakingChange]);
 
   const canPublish = localParticipant.permissions?.canPublish ?? false;
+  const micEnabled = localParticipant.isMicrophoneEnabled;
+
+  const toggleMic = useCallback(() => {
+    if (!canPublish) return;
+    localParticipant.setMicrophoneEnabled(!micEnabled);
+  }, [localParticipant, micEnabled, canPublish]);
+
+  const isActive = canPublish && micEnabled;
+  const showRipple = isActive && isSpeaking;
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="relative flex flex-col items-center gap-1.5">
       <RoomAudioRenderer />
 
-      {/* FAB Microphone button */}
-      {canPublish && (
-        <div className="relative">
-          <TrackToggle
-            source={Track.Source.Microphone}
-            className="w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold text-white bg-gradient-to-b from-green-500 to-green-700 shadow-[0_4px_0_rgb(20,83,45)] active:shadow-none active:translate-y-1 transition-all border border-green-400/30"
+      {/* Ripple rings — only when mic is open and audio is detected */}
+      {showRipple && (
+        <>
+          <span className="absolute inset-0 rounded-full bg-green-400/25 animate-ping" />
+          <span
+            className="absolute inset-0 rounded-full bg-green-400/15 animate-ping"
+            style={{ animationDuration: "1.6s", animationDelay: "0.4s" }}
           />
-          {/* Speaking ping indicator */}
-          {isSpeaking && (
-            <span className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-green-400 border-2 border-slate-900 animate-ping" />
-          )}
-        </div>
+        </>
       )}
 
-      {/* No publish permission — silent indicator */}
-      {!canPublish && (
-        <div className="w-12 h-12 rounded-full flex items-center justify-center bg-slate-800/60 border border-white/10">
-          <span className="text-white/30 text-lg">🔇</span>
-        </div>
-      )}
+      {/* Always show the 🎤 FAB — style changes based on state */}
+      <button
+        onClick={toggleMic}
+        disabled={!canPublish}
+        className={`relative w-20 h-20 rounded-full flex items-center justify-center text-3xl transition-all
+          ${isActive
+            ? "bg-gradient-to-b from-green-400 to-green-600 shadow-[0_6px_0_rgb(20,83,45)] active:shadow-none active:translate-y-1.5 border border-green-300/30"
+            : canPublish
+              ? "bg-gradient-to-b from-slate-600 to-slate-800 shadow-[0_6px_0_rgb(15,23,42)] active:shadow-none active:translate-y-1.5 border border-white/10"
+              : "bg-slate-800/40 border border-white/8 opacity-40 cursor-not-allowed"
+          }`}
+      >
+        🎤
+      </button>
 
-      {/* Pass mic — micro-3D amber button */}
-      {isCurrentSpeaker && (
-        <button
-          onClick={onEndTurn}
-          className="px-4 py-2 text-sm font-bold rounded-xl text-white bg-gradient-to-b from-amber-400 to-amber-600 shadow-[0_4px_0_rgb(120,53,15)] active:shadow-none active:translate-y-1 transition-all"
-        >
-          过麦 ⏭️
-        </button>
-      )}
+      <span className={`text-[10px] font-semibold tracking-wide
+        ${isActive ? "text-green-400" : canPublish ? "text-white/50" : "text-white/20"}`}
+      >
+        {isActive ? "发言中..." : canPublish ? "点击发言" : "等待..."}
+      </span>
     </div>
   );
 }
@@ -98,8 +112,6 @@ export default function VoiceChat({
   playerName,
   phase,
   currentSpeakerId,
-  isCurrentSpeaker,
-  onEndTurn,
   onSpeakingChange,
 }: VoiceChatProps) {
   const [tokenData, setTokenData] = useState<TokenData | null>(null);
@@ -123,43 +135,19 @@ export default function VoiceChat({
       }
     } catch (e) {
       console.error("Failed to fetch LiveKit token:", e);
-      setError("Voice chat unavailable");
+      setError("语音不可用");
       setTokenData(null);
     }
   }, [sessionId, playerId, playerName]);
 
-  // Refetch token on phase change or speaker change
   useEffect(() => {
     fetchToken();
   }, [fetchToken, phase, currentSpeakerId]);
 
-  if (!livekitUrl) {
-    return null;
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center gap-2">
-        <div className="w-12 h-12 rounded-full flex items-center justify-center bg-slate-800/60 border border-white/10">
-          <span className="text-red-400/60 text-lg">🔇</span>
-        </div>
-        <span className="text-[10px] text-red-400/60 italic">{error}</span>
-      </div>
-    );
-  }
-
+  if (!livekitUrl) return <DisabledFAB label="语音未配置" />;
+  if (error) return <DisabledFAB label="语音不可用" />;
   if (!tokenData?.token || !tokenData.room) {
-    if (phase === "night") {
-      return (
-        <div className="flex items-center gap-2">
-          <div className="w-12 h-12 rounded-full flex items-center justify-center bg-slate-800/40 border border-white/5">
-            <span className="text-white/20 text-lg">🔇</span>
-          </div>
-          <span className="text-[10px] text-white/30 italic">夜晚静默</span>
-        </div>
-      );
-    }
-    return null;
+    return <DisabledFAB label={phase === "night" ? "夜晚" : "连接中..."} />;
   }
 
   return (
@@ -170,11 +158,7 @@ export default function VoiceChat({
       audio={true}
       video={false}
     >
-      <VoiceChatInner
-        isCurrentSpeaker={isCurrentSpeaker}
-        onEndTurn={onEndTurn}
-        onSpeakingChange={onSpeakingChange}
-      />
+      <VoiceChatInner onSpeakingChange={onSpeakingChange} />
     </LiveKitRoom>
   );
 }
